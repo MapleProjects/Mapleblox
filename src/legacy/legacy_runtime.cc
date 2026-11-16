@@ -686,7 +686,7 @@ void ApplyRuntimeDefaults() {
   SetEnvDefault("MOCKTAIL_MAIN_THREAD_MESSAGE_PUMP", "0");
   SetEnvDefault("MOCKTAIL_IGNORE_WINDOW_CLOSE", "0");
   SetEnvDefault("MOCKTAIL_WIN_TITLE", "Roblox");
-  SetEnvDefault("MOCKTAIL_GRAPHICS_BACKEND", "angle-vulkan");
+  SetEnvDefault("MOCKTAIL_GRAPHICS_BACKEND", "direct-vulkan");
   SetEnvDefault("MOCKTAIL_REQUIRE_REAL_GRAPHICS", "0");
 }
 

@@ -19,6 +19,12 @@ std::uint64_t DetectHostMemoryBytes();
 // to a PC-class range.
 std::uint64_t CalculateTextureMemoryBudgetBytes(std::uint64_t host_memory_bytes);
 
+// Mapleblox: a dedicated GPU reports its own memory, which is what the guest
+// should see. Falls back to the host-memory heuristic when the board reports
+// nothing, and keeps a reserve for the compositor and the driver.
+std::uint64_t CalculateTextureMemoryBudgetBytesForVideo(
+    std::uint64_t video_memory_bytes, std::uint64_t host_memory_bytes);
+
 // A 0 budget, or a key already present, is preserved: an explicit fflags.json
 // or environment override wins.
 bool MergeTextureMemoryClientSettingsOverrides(std::uint64_t budget_bytes,

@@ -7,7 +7,10 @@
 #include <charconv>
 #include <climits>
 #include <cstdlib>
+#include <dlfcn.h>
+#include <filesystem>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -18,6 +21,41 @@
 namespace mocktail {
 namespace runtime {
 namespace {
+
+// Mapleblox: a Vulkan driver on the host is an ICD manifest plus a loader that
+// can open it. The check runs before anything else touches the GPU, so the
+// backend decision never depends on the configuration file or the command line.
+bool HostExposesVulkan() {
+  constexpr std::string_view kIcdDirectories[] = {
+      "/usr/share/vulkan/icd.d", "/etc/vulkan/icd.d",
+      "/usr/local/share/vulkan/icd.d"};
+  bool has_manifest = false;
+  for (const std::string_view directory : kIcdDirectories) {
+    std::error_code error;
+    std::filesystem::directory_iterator it(std::filesystem::path(directory),
+                                           error);
+    const std::filesystem::directory_iterator end;
+    while (!error && it != end) {
+      if (it->path().extension() == ".json") {
+        has_manifest = true;
+        break;
+      }
+      it.increment(error);
+    }
+    if (has_manifest) {
+      break;
+    }
+  }
+  if (!has_manifest) {
+    return false;
+  }
+  void* loader = dlopen("libvulkan.so.1", RTLD_LAZY | RTLD_LOCAL);
+  if (loader == nullptr) {
+    return false;
+  }
+  dlclose(loader);
+  return true;
+}
 
 std::string EncodeProxyCredential(std::string_view value) {
   constexpr char hex[] = "0123456789ABCDEF";
@@ -256,8 +294,11 @@ RuntimeConfig RuntimeConfig::FromEnvironment(const Environment& environment) {
   config.use_libsecret_ = environment.GetOr("MOCKTAIL_USE_LIBSECRET", "0") == "1";
   config.roblox_library_path_ = environment.GetOr(
       "ROBLOX_LIB_PATH", config.roblox_library_path_.string());
-  config.graphics_backend_name_ = environment.GetOr(
-      "MOCKTAIL_GRAPHICS_BACKEND", config.graphics_backend_name_);
+  // Mapleblox policy: the graphics backend is not user configurable. The host
+  // itself decides, by exposing a Vulkan ICD manifest plus a loader. Anything
+  // else falls back to the ANGLE legacy path, and no other backend exists.
+  config.graphics_backend_name_ =
+      HostExposesVulkan() ? "direct-vulkan" : "angle-vulkan";
   config.graphics_backend_ =
       ParseGraphicsBackend(config.graphics_backend_name_);
   config.window_.width =

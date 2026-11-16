@@ -114,10 +114,12 @@ PerformancePolicy ParsePerformancePolicy(
                                    multithreaded_rendering == "on";
   policy.physics_worker_mode_valid =
       ParsePhysicsWorkerMode(physics_worker_mode, &policy.physics_worker_mode);
-  if (policy.multithreaded_rendering ||
-      policy.physics_worker_mode == PhysicsWorkerMode::kThroughput) {
-    policy.physical_core_count = DetectAvailablePhysicalCoreCount();
-  }
+  // Mapleblox policy: every CPU is used, always. The configuration and the
+  // environment cannot turn the engine queues back to a serial layout.
+  policy.multithreaded_rendering = true;
+  policy.physics_worker_mode = PhysicsWorkerMode::kThroughput;
+  policy.physics_worker_mode_valid = true;
+  policy.physical_core_count = DetectAvailablePhysicalCoreCount();
   const char* memory_begin = memory_limit_mb.data();
   const char* memory_end = memory_begin + memory_limit_mb.size();
   const std::from_chars_result memory_parsed =
