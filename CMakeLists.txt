@@ -331,6 +331,47 @@ add_library(mocktail_runtime STATIC
   src/runtime/device_memory_profile.cc
 )
 add_library(Mocktail::Runtime ALIAS mocktail_runtime)
+
+# Mapleblox: the memory policy lives in Rust and links into the runtime as a
+# static archive. The C ABI is declared in texture_memory_policy.cc.
+find_program(MAPLEBLOX_CARGO_EXECUTABLE cargo REQUIRED)
+set(MAPLEBLOX_POLICY_MANIFEST "${CMAKE_SOURCE_DIR}/rust/policy/Cargo.toml")
+set(MAPLEBLOX_POLICY_ARCHIVE "${CMAKE_BINARY_DIR}/rust/libmapleblox_policy.a")
+add_custom_command(
+  OUTPUT "${MAPLEBLOX_POLICY_ARCHIVE}"
+  COMMAND "${MAPLEBLOX_CARGO_EXECUTABLE}" build --release
+          --manifest-path "${MAPLEBLOX_POLICY_MANIFEST}"
+          --target-dir "${CMAKE_BINARY_DIR}/rust"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+          "${CMAKE_BINARY_DIR}/rust/release/libmapleblox_policy.a"
+          "${MAPLEBLOX_POLICY_ARCHIVE}"
+  DEPENDS "${MAPLEBLOX_POLICY_MANIFEST}"
+          "${CMAKE_SOURCE_DIR}/rust/policy/src/lib.rs"
+  COMMENT "Building the Mapleblox Rust policy"
+  VERBATIM)
+add_custom_target(mapleblox_policy_build DEPENDS "${MAPLEBLOX_POLICY_ARCHIVE}")
+add_library(mapleblox_policy STATIC IMPORTED GLOBAL)
+set_target_properties(mapleblox_policy PROPERTIES
+  IMPORTED_LOCATION "${MAPLEBLOX_POLICY_ARCHIVE}")
+add_dependencies(mapleblox_policy mapleblox_policy_build)
+target_link_libraries(mocktail_runtime PUBLIC mapleblox_policy)
+
+# The diagnostics binary ships with the package: budget, FFlag validation and
+# a live benchmark of the running client.
+add_custom_command(
+  OUTPUT "${CMAKE_BINARY_DIR}/rust/release/mapleblox-tool"
+  COMMAND "${MAPLEBLOX_CARGO_EXECUTABLE}" build --release
+          --manifest-path "${CMAKE_SOURCE_DIR}/rust/tool/Cargo.toml"
+          --target-dir "${CMAKE_BINARY_DIR}/rust"
+  DEPENDS "${CMAKE_SOURCE_DIR}/rust/tool/Cargo.toml"
+          "${CMAKE_SOURCE_DIR}/rust/tool/src/main.rs"
+          "${MAPLEBLOX_POLICY_ARCHIVE}"
+  COMMENT "Building the Mapleblox tool"
+  VERBATIM)
+add_custom_target(mapleblox_tool_build ALL
+  DEPENDS "${CMAKE_BINARY_DIR}/rust/release/mapleblox-tool")
+install(PROGRAMS "${CMAKE_BINARY_DIR}/rust/release/mapleblox-tool"
+  DESTINATION "${CMAKE_INSTALL_BINDIR}")
 target_include_directories(mocktail_runtime PUBLIC include)
 target_include_directories(mocktail_runtime PUBLIC
   ${MOCKTAIL_JNI_INCLUDE_DIRS}

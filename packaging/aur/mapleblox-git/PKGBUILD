@@ -38,6 +38,7 @@ depends=(
 )
 makedepends=(
   'cmake>=3.20'
+  'cargo'
   'git'
   'lld'
   'ninja'
@@ -91,6 +92,12 @@ package() {
   install -Dm644 mapleblox/LICENSE \
     "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 
+  # Drop the upstream branding so the system only shows the fork.
+  rm -f "${pkgdir}/usr/share/applications/io.github.CoderDayton.nightcap.desktop"
+  rm -f "${pkgdir}/usr/share/metainfo/io.github.CoderDayton.nightcap.metainfo.xml"
+  rm -f "${pkgdir}"/usr/share/icons/hicolor/*/apps/io.github.CoderDayton.nightcap.png
+  rm -f "${pkgdir}/usr/share/icons/hicolor/scalable/apps/io.github.CoderDayton.nightcap.svg"
+
   # Mapleblox entry: same binary, own name and icon, so the launcher shows the
   # fork instead of the upstream project.
   install -Dm644 /dev/stdin \
@@ -108,6 +115,6 @@ MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;
 StartupWMClass=io.github.CoderDayton.nightcap
 EOF
 
-  install -Dm644 mapleblox/packaging/io.github.CoderDayton.nightcap.svg \
+  install -Dm644 mapleblox/packaging/mapleblox.svg \
     "${pkgdir}/usr/share/icons/hicolor/scalable/apps/mapleblox.svg"
 }

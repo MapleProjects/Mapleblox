@@ -1,0 +1,19 @@
+[package]
+name = "mapleblox-policy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Mapleblox memory and performance policy, exposed to the C++ runtime over a C ABI"
+license = "Apache-2.0"
+
+[lib]
+name = "mapleblox_policy"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
