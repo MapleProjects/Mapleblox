@@ -44,8 +44,8 @@ Each slice is named after the call it times, on the thread that made it.
 | `present` | `host present`: the host driver's present, nested inside the slice above | |
 | `wait` | `vkAcquireNextImageKHR`, `vkAcquireNextImage2KHR`, `vkWaitForFences`, `vkWaitSemaphores`, `vkWaitSemaphoresKHR`, `vkQueueWaitIdle`, `vkDeviceWaitIdle` | |
 | `submit` | `vkQueueSubmit`, `vkQueueSubmit2`, `vkQueueSubmit2KHR` | `submits` |
-| `texture` | `etc2 decode`: CPU decode of ETC2 textures. On a device with a timeline semaphore this runs on the decode dispatcher, not the submitting thread | `uploads`, `compressed_bytes`, `decoded_bytes` |
-| `texture` | `etc2 gather`: the part of an asynchronous upload that stays on the submitting thread. Absent when the decode ran inline | `uploads`, `compressed_bytes`, `decoded_bytes`, `ticket` |
+| `texture` | `etc2 decode`: CPU decode of ETC2 textures. On a device with a timeline semaphore this runs on the decode dispatcher, not the submitting thread. Under `MOCKTAIL_ETC2_RUST_DECODE` it always runs on the submitting thread, inside `vkQueueSubmit` | `uploads`, `compressed_bytes`, `decoded_bytes` |
+| `texture` | `etc2 gather`: the part of an asynchronous upload that stays on the submitting thread. Absent when the decode ran inline, and absent under `MOCKTAIL_ETC2_RUST_DECODE` | `uploads`, `compressed_bytes`, `decoded_bytes`, `ticket` |
 | `texture` | `etc2 staging create`: creating a staging block for ETC2 uploads, when no block has room left | `bytes` |
 | `texture` | `etc2 staging destroy`: destroying empty staging blocks beyond the four kept idle | `buffers` |
 | `texture` | `etc2 release wait`: a command buffer reset waiting for its uploads' decode. Only waits of 0.1 ms or more are recorded | `ticket` |

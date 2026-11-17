@@ -11,6 +11,21 @@ setting, the GPU upscale filter, and the extra mip levels above a
 texture's own with their view, barrier, blit and sampler LOD remapping.
 Overrides would then draw at the original texture's size.
 
+The four graphics items below are planned in
+[GRAPHICS_PERFORMANCE_PLAN.md](GRAPHICS_PERFORMANCE_PLAN.md), with the baseline
+numbers each one has to move and how each one is reverted.
+
+- Decode ETC2 off the thread that submits, on the worker pool, synchronised
+with a fence of ours. The decode is synchronous today, so it lands inside
+`vkQueueSubmit`: 324 ms on the texture-load batch and 16 frames over 100 ms in
+a 23-minute run.
+- Pack ETC2 to BC7 and BC1 on the CPU after decoding. Without it the textures
+occupy 1.49 GB of video memory instead of about 400 MB.
+- Persist the pipeline cache between sessions, then compile pipelines off the
+main thread. One `vkCreateGraphicsPipelines` call costs 102 ms today.
+- Suballocate device memory in the adapter. `vkAllocateMemory` and
+`vkFreeMemory` cost 13.7 s across 34,892 calls in one hour of play.
+
 ## Shipped
 
 - Settings window, from the app menu or `mocktail --settings`: graphics,

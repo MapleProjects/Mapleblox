@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f0542d"/>
-      <stop offset="55%" stop-color="#c22a1c"/>
-      <stop offset="100%" stop-color="#7a120d"/>
+      <stop offset="0%" stop-color="#8e74e8"/>
+      <stop offset="55%" stop-color="#6c4fd1"/>
+      <stop offset="100%" stop-color="#2f2a6b"/>
     </linearGradient>
     <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.30"/>
@@ -19,5 +19,5 @@
     <path d="M56 164h34"/>
   </g>
   <path d="M118 78l74 50-74 50z" fill="#ffffff"/>
-  <path d="M118 78l74 50-74 50z" fill="none" stroke="#7a120d" stroke-opacity="0.25" stroke-width="4"/>
+  <path d="M118 78l74 50-74 50z" fill="none" stroke="#2f2a6b" stroke-opacity="0.25" stroke-width="4"/>
 </svg>
