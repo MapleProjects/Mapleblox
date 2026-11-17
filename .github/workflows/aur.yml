@@ -1,14 +1,19 @@
 name: Publish to AUR
 
+# Tag and release events do not reach this fork reliably, so the package is
+# synchronised on a schedule: every six hours the newest v* tag is compared
+# with the AUR pkgver and published when they differ. Pushes to main and manual
+# dispatches also run it.
 on:
+  schedule:
+    - cron: "17 */6 * * *"
   push:
-    tags:
-      - "v*"
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, without the leading v"
-        required: true
+        description: "Version to publish without the leading v (empty = newest tag)"
+        required: false
 
 permissions:
   contents: read
@@ -19,24 +24,51 @@ concurrency:
 
 jobs:
   publish:
-    name: Bump mapleblox-git and push
+    name: Sync mapleblox-git with the newest tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve the version
         id: version
         shell: bash
         run: |
           set -Eeuo pipefail
-          raw="${{ github.event.release.tag_name || inputs.version }}"
-          version="${raw#v}"
+          version="${{ inputs.version }}"
+          if [[ -z "$version" ]]; then
+            tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
+            if [[ -z "$tag" ]]; then
+              echo "no v* tag yet; nothing to publish"
+              exit 0
+            fi
+            version="${tag#v}"
+          fi
+          version="${version#v}"
           [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]
           echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "publishing $version"
+
+      - name: Check the published version
+        id: current
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "${{ secrets.AUR_SSH_KEY }}" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan aur.archlinux.org 2>/dev/null >> "$HOME/.ssh/known_hosts"
+          rm -rf aur-check
+          git clone --depth 1 ssh://aur@aur.archlinux.org/mapleblox-git.git aur-check
+          published="$(sed -n 's/^pkgver=//p' aur-check/PKGBUILD)"
+          echo "value=$published" >> "$GITHUB_OUTPUT"
+          echo "AUR has $published"
 
       - name: Prepare the AUR tree
+        if: steps.current.outputs.value != steps.version.outputs.value
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -56,19 +88,10 @@ jobs:
           grep -Fqx $'\tpkgver = ${{ steps.version.outputs.value }}' "$package_dir/.SRCINFO"
 
       - name: Push to AUR
+        if: steps.current.outputs.value != steps.version.outputs.value
         shell: bash
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           set -Eeuo pipefail
-          if [[ -z "${AUR_SSH_KEY}" ]]; then
-            echo "AUR_SSH_KEY is not configured" >&2
-            exit 1
-          fi
-          install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$AUR_SSH_KEY" > "$HOME/.ssh/id_ed25519"
-          chmod 600 "$HOME/.ssh/id_ed25519"
-          ssh-keyscan aur.archlinux.org 2>/dev/null >> "$HOME/.ssh/known_hosts"
           rm -rf aur-package
           git clone ssh://aur@aur.archlinux.org/mapleblox-git.git aur-package
           install -m 0644 packaging/aur/mapleblox-git/PKGBUILD aur-package/PKGBUILD
