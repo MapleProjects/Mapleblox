@@ -16,7 +16,7 @@
 //! deterministic pseudo-random blocks and writes `tests/vectors.bin`; the test
 //! below decodes the same blocks here and compares every byte.
 
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 mod bc7;
 
@@ -574,6 +574,33 @@ pub fn encode_bc7_image(
     source_stride: usize,
     destination: &mut [u8],
 ) -> Result<(), DecodeError> {
+    let blocks_high = (height as usize + 3) / 4;
+    encode_bc7_block_rows(
+        rgba,
+        width,
+        height,
+        source_stride,
+        0,
+        blocks_high as u32,
+        destination,
+    )
+}
+
+/// Packs `block_row_count` block rows of an RGBA8 image into BC7 blocks,
+/// starting at `first_block_row`.
+///
+/// `destination` holds only the band, `blocks_wide * block_row_count` blocks of
+/// 16 bytes, so bands of one image can be packed on separate threads: no band
+/// reads or writes another band's bytes.
+pub fn encode_bc7_block_rows(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    first_block_row: u32,
+    block_row_count: u32,
+    destination: &mut [u8],
+) -> Result<(), DecodeError> {
     if width == 0 || height == 0 {
         return Err(DecodeError::InvalidArgument);
     }
@@ -584,11 +611,20 @@ pub fn encode_bc7_image(
     if source_stride < width * 4 || rgba.len() < source_stride * (height - 1) + width * 4 {
         return Err(DecodeError::BufferTooSmall);
     }
-    if destination.len() < blocks_wide * blocks_high * 16 {
+    let first = first_block_row as usize;
+    let count = block_row_count as usize;
+    if first + count > blocks_high {
+        return Err(DecodeError::InvalidArgument);
+    }
+    if count == 0 {
+        return Ok(());
+    }
+    if destination.len() < blocks_wide * count * 16 {
         return Err(DecodeError::BufferTooSmall);
     }
     let mut block = [0u8; 64];
-    for block_y in 0..blocks_high {
+    for band_row in 0..count {
+        let block_y = first + band_row;
         for block_x in 0..blocks_wide {
             for row in 0..4 {
                 let y = (block_y * 4 + row).min(height - 1);
@@ -600,7 +636,7 @@ pub fn encode_bc7_image(
                 }
             }
             let packed = bc7::encode_block(&block);
-            let offset = (block_y * blocks_wide + block_x) * 16;
+            let offset = (band_row * blocks_wide + block_x) * 16;
             destination[offset..offset + 16].copy_from_slice(&packed);
         }
     }
@@ -785,6 +821,44 @@ pub unsafe extern "C" fn mapleblox_bc7_encode_image(
 /// Packs one channel of an image into BC4 blocks. Returns 0 on success.
 ///
 /// # Safety
+/// Packs a band of block rows of an RGBA8 image into BC7 blocks. `destination`
+/// holds only the band, `blocks_wide * block_row_count` blocks of 16 bytes.
+///
+/// # Safety
+///
+/// `rgba` must point to `rgba_len` readable bytes and `destination` to
+/// `destination_len` writable ones.
+#[no_mangle]
+pub unsafe extern "C" fn mapleblox_bc7_encode_block_rows(
+    rgba: *const u8,
+    rgba_len: usize,
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    first_block_row: u32,
+    block_row_count: u32,
+    destination: *mut u8,
+    destination_len: usize,
+) -> i32 {
+    if rgba.is_null() || destination.is_null() {
+        return ERR_INVALID_ARGUMENT;
+    }
+    let rgba = unsafe { std::slice::from_raw_parts(rgba, rgba_len) };
+    let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
+    match encode_bc7_block_rows(
+        rgba,
+        width,
+        height,
+        source_stride,
+        first_block_row,
+        block_row_count,
+        destination,
+    ) {
+        Ok(()) => ERR_OK,
+        Err(error) => error.code(),
+    }
+}
+
 /// As `mapleblox_bc7_encode_image`.
 #[no_mangle]
 pub unsafe extern "C" fn mapleblox_bc4_encode_image(

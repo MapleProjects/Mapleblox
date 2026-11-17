@@ -292,6 +292,15 @@ unsigned DecodeWorkerCount() {
   return count;
 }
 
+// Packing is compute bound, so the cap that keeps the decode off the memory
+// bus does not apply; twelve leaves the guest room while still spreading the
+// load of a single large mip over the machine.
+unsigned PackWorkerCount() {
+  static const unsigned count =
+      std::min(12U, std::max(1U, std::thread::hardware_concurrency()));
+  return count;
+}
+
 // Images whose encode the budget decided since `since_ns`, by host scale.
 struct EncodeStats {
   std::uint64_t by_scale[9] = {};
@@ -661,6 +670,10 @@ constexpr VkDeviceSize kDirectBatchBytes = 8u * 1024u * 1024u;
 // Device-local staging for one GPU upload is capped at this many blocks,
 // 128 MiB at the default block size.
 constexpr VkDeviceSize kMaxGpuStagingBlocks = 8;
+// Blocks a packing band aims at. Packing a block costs a few microseconds, so
+// a band of this size keeps every worker busy for a few milliseconds and still
+// balances the last one.
+constexpr std::uint32_t kPackBlocksPerBand = 1024;
 
 // A growable byte buffer that leaves new bytes uninitialized. The gather
 // writes every byte it later reads, and zeroing a multi-megabyte buffer is
@@ -733,7 +746,18 @@ struct PendingUpload {
   // Place among the uploads and block copies of its submit, which replay in
   // that order because each may read kept blocks another writes.
   std::uint64_t order = 0;
+  // The host image is BC7 and the CPU packer fills it, so `target` takes
+  // blocks instead of texels.
+  bool pack_bc = false;
 };
+
+// Uploads the CPU packer fills: a BC7 host image at scale 1 with a whole
+// region, so the blocks come straight from the decoded texels. Everything else
+// keeps the path it had.
+bool PacksOnCpu(const PendingUpload& upload) {
+  return upload.pack_bc && !upload.keep_only && !upload.widened &&
+         upload.scale_row_blocks == 0 && upload.scale <= 1;
+}
 
 template <typename Region>
 struct GpuCopy {
@@ -857,12 +881,12 @@ bool IsSmallMip(const ImageRecord& record, std::uint32_t mip) {
 }
 
 // New images become BC: always with Compress Textures on, and while video
-// memory is low with it off. The Rust decoder mode keeps every image
-// uncompressed, because a compressed host image is only fed by the GPU encoder,
-// and that encoder is the path being replaced.
+// memory is low with it off. The Rust decoder mode packs BC7 on the CPU instead
+// of transcoding on the GPU, and starts doing so only when the packer is asked
+// for, because it is the newer of the two paths.
 bool CompressesTextures(const HostDevice& dev) {
   if (RustEtc2DecoderEnabled()) {
-    return false;
+    return RustBc7PackerEnabled();
   }
   return dev.bc_textures ||
          (dev.bc_fallback && dev.bc_low_memory.load(std::memory_order_acquire));
@@ -2217,6 +2241,12 @@ struct VulkanEtc2Emulation::State {
       EmitScaleSource(upload, compressed);
       return;
     }
+    if (PacksOnCpu(upload)) {
+      // PackBatch filled these blocks from the same texels on the decode
+      // workers, so only the compressed mip is left to keep here.
+      StoreScaledUpload(upload, compressed);
+      return;
+    }
     const std::shared_ptr<const RgbaImage> replacement =
         picked != nullptr ? *picked : FindOverride(upload, compressed, decoded);
     if (replacement != nullptr) {
@@ -2388,6 +2418,87 @@ struct VulkanEtc2Emulation::State {
     }
   };
 
+  // One band of block rows of one upload for the CPU packer.
+  struct PackBand {
+    const PendingUpload* upload = nullptr;
+    const std::uint8_t* decoded = nullptr;
+    std::uint32_t first_block_row = 0;
+    std::uint32_t block_row_count = 0;
+  };
+
+  struct PackQueue {
+    std::vector<PackBand> bands;
+    std::atomic<std::size_t> next{0};
+    std::atomic<bool> failed{false};
+
+    void Run() {
+      for (;;) {
+        const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
+        if (index >= bands.size()) {
+          return;
+        }
+        const PackBand& band = bands[index];
+        const PendingUpload& upload = *band.upload;
+        const std::uint32_t blocks_wide = (upload.width + 3) / 4;
+        const std::uint32_t blocks_high = (upload.height + 3) / 4;
+        const std::size_t layer_texels =
+            std::size_t{upload.width} * upload.height;
+        const std::size_t layer_blocks = std::size_t{blocks_wide} * blocks_high;
+        const std::size_t band_bytes =
+            std::size_t{blocks_wide} * band.block_row_count * 16;
+        for (std::uint32_t layer = 0; layer < upload.layers; ++layer) {
+          if (!RustPackBc7BlockRows(
+                  band.decoded + layer * layer_texels * 4, upload.width,
+                  upload.height, std::size_t{upload.width} * 4,
+                  band.first_block_row, band.block_row_count,
+                  upload.target +
+                      (layer * layer_blocks +
+                       std::size_t{band.first_block_row} * blocks_wide) *
+                          16,
+                  band_bytes)) {
+            failed.store(true, std::memory_order_relaxed);
+            return;
+          }
+        }
+      }
+    }
+  };
+
+  // Packing a block costs several times what decoding one does, and a batch
+  // often holds a single large mip, so the emit pass alone would leave fifteen
+  // cores idle behind one image. The block rows of every packed upload in the
+  // batch are queued together instead.
+  void PackBatch(const std::vector<EmitJob>& jobs) {
+    PackQueue queue;
+    for (const EmitJob& job : jobs) {
+      const PendingUpload& upload = *job.upload;
+      if (job.decoded == nullptr || !PacksOnCpu(upload)) {
+        continue;
+      }
+      const std::uint32_t blocks_wide = (upload.width + 3) / 4;
+      const std::uint32_t blocks_high = (upload.height + 3) / 4;
+      const std::uint32_t rows_per_band = std::max<std::uint32_t>(
+          1, kPackBlocksPerBand / std::max<std::uint32_t>(blocks_wide, 1));
+      for (std::uint32_t row = 0; row < blocks_high; row += rows_per_band) {
+        queue.bands.push_back(
+            {&upload, job.decoded, row,
+             std::min(rows_per_band, blocks_high - row)});
+      }
+    }
+    if (queue.bands.empty()) {
+      return;
+    }
+    const std::size_t threads = std::min<std::size_t>(
+        std::max(PackWorkerCount(), 1U), queue.bands.size());
+    RunOnDecodeWorkers([](void* context) { static_cast<PackQueue*>(context)->Run(); },
+                       &queue, static_cast<unsigned>(threads));
+    if (queue.failed.load(std::memory_order_acquire)) {
+      // The blocks of that band stay as they were, which the copy uploads as
+      // garbage, but the alternative is holding the whole batch back.
+      LogFailure("could not pack a BC7 upload");
+    }
+  }
+
   // Resampling a batch costs sixteen times the decoded texels at the default
   // upscale, so uploads are emitted across the decode worker pool. They write
   // disjoint staging ranges, and level 0 is emitted before the rest because it
@@ -2396,6 +2507,7 @@ struct VulkanEtc2Emulation::State {
     if (jobs.empty()) {
       return;
     }
+    PackBatch(jobs);
     // DecodeAndEmit keeps uploads that share kept blocks in separate
     // batches, so a batch needs no order of its own.
     std::vector<EmitJob> level_zero;
@@ -2901,7 +3013,7 @@ struct VulkanEtc2Emulation::State {
       }
       return;
     }
-    if (record.transcoded) {
+    if (record.transcoded && !RustBc7PackerEnabled()) {
       LogFailure("skipped an upload into a compressed image");
       return;
     }
@@ -2916,11 +3028,24 @@ struct VulkanEtc2Emulation::State {
     }
     WidenPartialUploads(command_buffer, record, destination, &uploads,
                         &rewritten);
+    // A BC7 host image takes blocks, so the staging of each upload is sized in
+    // blocks and the copy reads them at a block-aligned row pitch.
+    const bool packs = record.transcoded && RustBc7PackerEnabled();
     total = 0;
     for (std::size_t index = 0; index < uploads.size(); ++index) {
-      uploads[index].target_offset = total;
+      PendingUpload& upload = uploads[index];
+      if (packs) {
+        upload.pack_bc = true;
+        const std::uint32_t blocks_wide = (upload.width + 3) / 4;
+        const std::uint32_t blocks_high = (upload.height + 3) / 4;
+        upload.target_bytes =
+            std::size_t{blocks_wide} * blocks_high * 16 * upload.layers;
+        rewritten[index].bufferRowLength = blocks_wide * 4;
+        rewritten[index].bufferImageHeight = blocks_high * 4;
+      }
+      upload.target_offset = total;
       rewritten[index].bufferOffset = total;
-      total += uploads[index].target_bytes;
+      total += upload.target_bytes;
     }
     if (!AcquireStaging(dev, total, &staging)) {
       LogFailure("could not allocate a host-visible staging buffer");
@@ -4400,9 +4525,17 @@ VkResult VulkanEtc2Emulation::CreateImage(VkDevice device,
   // Read once: another thread may latch low memory while this image is sized.
   const bool compresses = CompressesTextures(*dev);
   const bool can_transcode = dev->gpu != nullptr && dev->gpu->CanTranscode();
+  // The CPU packer only fills BC7, and only at scale 1: a scaled image is
+  // resampled on the CPU and its blocks are re-encoded from kept ETC2 blocks,
+  // which is the GPU transcoder's job.
+  const bool packs_on_cpu =
+      RustBc7PackerEnabled() &&
+      (bc_format == VK_FORMAT_BC7_UNORM_BLOCK ||
+       bc_format == VK_FORMAT_BC7_SRGB_BLOCK);
   const auto bc_eligible = [&](std::uint32_t at_scale) {
-    return bc_format_known && compresses && can_transcode && !may_override &&
-           (at_scale == 1 || dev->gpu->CanScale()) &&
+    return bc_format_known && compresses && (can_transcode || packs_on_cpu) &&
+           !may_override &&
+           (at_scale == 1 || (dev->gpu != nullptr && dev->gpu->CanScale())) &&
            create_info->imageType == VK_IMAGE_TYPE_2D &&
            create_info->tiling == VK_IMAGE_TILING_OPTIMAL &&
            (create_info->usage & ~kBcUsage) == 0 &&

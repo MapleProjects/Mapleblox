@@ -45,43 +45,54 @@ fn blend3(low: u8, high: u8, index: u32) -> u8 {
     (value / 7) as u8
 }
 
-/// The 4-bit index whose blend is closest to `value`, for one channel.
-fn nearest4(low: u8, high: u8, value: u8) -> u32 {
-    let mut best = 0;
-    let mut best_error = u32::MAX;
-    for index in 0..16u32 {
-        let error = (blend4(low, high, index) as i32 - value as i32).unsigned_abs();
-        if error < best_error {
-            best_error = error;
-            best = index;
+/// The sixteen levels a pair of endpoints blends to. Building them once per
+/// candidate turns every texel measurement into a lookup, which is what keeps
+/// the search away from sixteen blends per texel.
+fn build_levels(low: [u8; 4], high: [u8; 4]) -> [[u8; 4]; 16] {
+    let mut levels = [[0u8; 4]; 16];
+    for (index, level) in levels.iter_mut().enumerate() {
+        for channel in 0..4 {
+            level[channel] = blend4(low[channel], high[channel], index as u32);
         }
     }
-    best
+    levels
 }
 
-/// Squared error of one texel against a pair of endpoints and an index.
-fn texel_error4(low: [u8; 4], high: [u8; 4], index: u32, texel: &[u8]) -> u32 {
+/// Squared error of one texel against a level of the pair.
+fn level_error(levels: &[[u8; 4]; 16], index: u32, texel: &[u8]) -> u32 {
+    let level = &levels[index as usize];
     let mut error = 0;
     for channel in 0..4 {
-        let blended = blend4(low[channel], high[channel], index) as i32;
-        let difference = blended - texel[channel] as i32;
+        let difference = level[channel] as i32 - texel[channel] as i32;
         error += (difference * difference) as u32;
     }
     error
 }
 
-/// The index of one texel that minimises the error against these endpoints.
-fn nearest_texel4(low: [u8; 4], high: [u8; 4], texel: &[u8]) -> u32 {
-    let mut best = 0;
-    let mut best_error = u32::MAX;
-    for index in 0..16u32 {
-        let error = texel_error4(low, high, index, texel);
-        if error < best_error {
-            best_error = error;
-            best = index;
+/// Index of the weight nearest to a projection in 1/64ths, so the search for
+/// the closest level is a table read instead of sixteen blends.
+const NEAREST_WEIGHT: [u8; 65] = build_nearest_weight();
+
+const fn build_nearest_weight() -> [u8; 65] {
+    let mut table = [0u8; 65];
+    let mut scaled = 0;
+    while scaled < 65 {
+        let mut best = 0u8;
+        let mut best_distance = i32::MAX;
+        let mut index = 0;
+        while index < 16 {
+            let distance = WEIGHTS4[index] as i32 - scaled as i32;
+            let distance = if distance < 0 { -distance } else { distance };
+            if distance < best_distance {
+                best_distance = distance;
+                best = index as u8;
+            }
+            index += 1;
         }
+        table[scaled] = best;
+        scaled += 1;
     }
-    best
+    table
 }
 
 /// Rounds an endpoint to the 8-bit values mode 6 can represent: a 7-bit field
@@ -136,20 +147,78 @@ fn fit_endpoints(texels: &[[u8; 4]], indices: &[u32; 16]) -> ([f32; 4], [f32; 4]
 
 /// Total error of a block for a pair of endpoints and its indices.
 fn block_error(texels: &[[u8; 4]], low: [u8; 4], high: [u8; 4], indices: &[u32; 16]) -> u64 {
+    let levels = build_levels(low, high);
     let mut total = 0u64;
     for (texel, &index) in texels.iter().zip(indices.iter()) {
-        total += texel_error4(low, high, index, texel) as u64;
+        total += level_error(&levels, index, texel) as u64;
     }
     total
 }
 
 /// Picks the indices of every texel for a pair of endpoints.
-fn assign_indices(texels: &[[u8; 4]], low: [u8; 4], high: [u8; 4]) -> [u32; 16] {
+///
+/// The level is found by projecting the texel onto the line the endpoints
+/// span, which is the choice a least-squares fit expects, and the two
+/// neighbouring levels are then measured exactly so the discrete pick is never
+/// worse than the projection. Sixteen blends per texel, as an exhaustive
+/// search would need, is what made packing cost ten times the decode.
+fn assign_indices(texels: &[[u8; 4]; 16], low: [u8; 4], high: [u8; 4]) -> [u32; 16] {
+    let mut direction = [0i32; 4];
+    let mut length = 0i32;
+    for channel in 0..4 {
+        direction[channel] = high[channel] as i32 - low[channel] as i32;
+        length += direction[channel] * direction[channel];
+    }
     let mut indices = [0u32; 16];
+    if length == 0 {
+        return indices;
+    }
+    let levels = build_levels(low, high);
+    // Scaling by a reciprocal keeps the one integer division per candidate
+    // instead of one per texel, which was the bulk of the packing cost.
+    let reciprocal = (((1u64 << 24) + (length as u64) / 2) / length as u64) as i64;
     for (slot, texel) in indices.iter_mut().zip(texels.iter()) {
-        *slot = nearest_texel4(low, high, texel);
+        let mut projection = 0i64;
+        for channel in 0..4 {
+            projection +=
+                (texel[channel] as i64 - low[channel] as i64) * direction[channel] as i64;
+        }
+        let scaled = ((projection * 64 * reciprocal) >> 24).clamp(0, 64);
+        let nearest = NEAREST_WEIGHT[scaled as usize] as u32;
+        let mut best = nearest;
+        let mut best_error = level_error(&levels, nearest, texel);
+        for candidate in nearest.saturating_sub(1)..=(nearest + 1).min(15) {
+            let error = level_error(&levels, candidate, texel);
+            if error < best_error {
+                best_error = error;
+                best = candidate;
+            }
+        }
+        *slot = best;
     }
     indices
+}
+
+/// The p-bit of an endpoint: the parity that leaves the four channels closest
+/// to the value being quantized. Both parities round every channel down to the
+/// even neighbour, so the choice only moves the odd channels by one level, and
+/// picking it here costs one pass instead of the four the search used to try.
+fn best_parity(endpoint: [f32; 4]) -> u8 {
+    let mut even_error = 0.0f32;
+    let mut odd_error = 0.0f32;
+    for channel in 0..4 {
+        let value = endpoint[channel].clamp(0.0, 255.0);
+        let even = (value.round() as i32) & !1;
+        let below = even as f32 - value;
+        let above = (even + 1) as f32 - value;
+        even_error += below * below;
+        odd_error += above * above;
+    }
+    if odd_error < even_error {
+        1
+    } else {
+        0
+    }
 }
 
 /// Encodes one 4x4 RGBA8 block, 64 bytes, into a BC7 mode 6 block.
@@ -238,42 +307,37 @@ pub fn encode_block(rgba: &[u8]) -> [u8; 16] {
         ),
     ];
 
+    // Both starts are measured once and only the better one is refined, which
+    // costs four candidates instead of six and lands on the same endpoints for
+    // the textures this runtime sees.
     for (start_low, start_high) in starts {
-        let mut low = start_low;
-        let mut high = start_high;
-        for _ in 0..3 {
-            // The p-bit is shared by the four channels of an endpoint, so both
-            // parities are tried and the better one kept.
-            let mut round_error = u64::MAX;
-            let mut round_low = [0u8; 4];
-            let mut round_high = [0u8; 4];
-            let mut round_indices = [0u32; 16];
-            for low_parity in 0..2u8 {
-                for high_parity in 0..2u8 {
-                    let quantized_low = quantize_endpoint(low, low_parity);
-                    let quantized_high = quantize_endpoint(high, high_parity);
-                    let indices = assign_indices(&texels, quantized_low, quantized_high);
-                    let error = block_error(&texels, quantized_low, quantized_high, &indices);
-                    if error < round_error {
-                        round_error = error;
-                        round_low = quantized_low;
-                        round_high = quantized_high;
-                        round_indices = indices;
-                    }
-                }
-            }
-            if round_error < best_error {
-                best_error = round_error;
-                best_low = round_low;
-                best_high = round_high;
-                best_indices = round_indices;
-            }
-            let (fitted_low, fitted_high) = fit_endpoints(&texels, &round_indices);
-            if fitted_low == [0.0; 4] && fitted_high == [0.0; 4] {
-                break;
-            }
-            low = fitted_low;
-            high = fitted_high;
+        // The p-bit is shared by the four channels of an endpoint, so each
+        // endpoint takes the parity that fits it best.
+        let quantized_low = quantize_endpoint(start_low, best_parity(start_low));
+        let quantized_high = quantize_endpoint(start_high, best_parity(start_high));
+        let indices = assign_indices(&texels, quantized_low, quantized_high);
+        let error = block_error(&texels, quantized_low, quantized_high, &indices);
+        if error < best_error {
+            best_error = error;
+            best_low = quantized_low;
+            best_high = quantized_high;
+            best_indices = indices;
+        }
+    }
+    for _ in 0..2 {
+        let (fitted_low, fitted_high) = fit_endpoints(&texels, &best_indices);
+        if fitted_low == [0.0; 4] && fitted_high == [0.0; 4] {
+            break;
+        }
+        let quantized_low = quantize_endpoint(fitted_low, best_parity(fitted_low));
+        let quantized_high = quantize_endpoint(fitted_high, best_parity(fitted_high));
+        let indices = assign_indices(&texels, quantized_low, quantized_high);
+        let error = block_error(&texels, quantized_low, quantized_high, &indices);
+        if error < best_error {
+            best_error = error;
+            best_low = quantized_low;
+            best_high = quantized_high;
+            best_indices = indices;
         }
     }
 
@@ -564,3 +628,4 @@ mod tests {
         }
     }
 }
+
