@@ -2744,5 +2744,144 @@ TEST(VulkanEtc2EmulationTest, SignalsDecodeValuesInHandOutOrder) {
   }
 }
 
+
+// Memory the driver hands out for the suballocator, so a test can check that
+// several application allocations share one block.
+std::vector<VkDeviceMemory> g_pool_blocks;
+std::vector<VkDeviceSize> g_pool_block_sizes;
+std::vector<std::pair<VkDeviceMemory, VkDeviceSize>> g_pool_binds;
+std::vector<VkDeviceMemory> g_pool_freed;
+
+VKAPI_ATTR VkResult VKAPI_CALL FakePoolAllocateMemory(
+    VkDevice, const VkMemoryAllocateInfo* info, const VkAllocationCallbacks*,
+    VkDeviceMemory* memory) {
+  *memory = FakeHandle<VkDeviceMemory>(0x9000 + g_pool_blocks.size());
+  g_pool_blocks.push_back(*memory);
+  g_pool_block_sizes.push_back(info->allocationSize);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL FakePoolBindImageMemory(VkDevice, VkImage,
+                                                       VkDeviceMemory memory,
+                                                       VkDeviceSize offset) {
+  g_pool_binds.emplace_back(memory, offset);
+  return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL FakePoolFreeMemory(VkDevice, VkDeviceMemory memory,
+                                              const VkAllocationCallbacks*) {
+  g_pool_freed.push_back(memory);
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FakePoolGetDeviceProcAddr(
+    VkDevice, const char* name) {
+  const auto is = [name](const char* candidate) {
+    return std::strcmp(name, candidate) == 0;
+  };
+  if (is("vkAllocateMemory")) {
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePoolAllocateMemory);
+  }
+  if (is("vkBindImageMemory")) {
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePoolBindImageMemory);
+  }
+  if (is("vkFreeMemory")) {
+    return reinterpret_cast<PFN_vkVoidFunction>(FakePoolFreeMemory);
+  }
+  return nullptr;
+}
+
+TEST(VulkanEtc2EmulationTest, SuballocatesDeviceMemoryIntoAlignedBlocks) {
+  setenv("MOCKTAIL_SUBALLOCATE_MEMORY", "1", 1);
+  g_pool_blocks.clear();
+  g_pool_block_sizes.clear();
+  g_pool_binds.clear();
+  g_pool_freed.clear();
+
+  const VkDevice device = FakeHandle<VkDevice>(0x9100);
+  VkPhysicalDeviceMemoryProperties memory{};
+  memory.memoryTypeCount = 1;
+  memory.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  memory.memoryHeapCount = 1;
+  memory.memoryHeaps[0].size = std::uint64_t{1} << 30;
+  memory.memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x9101), true,
+                           memory, FakePoolGetDeviceProcAddr, false, false,
+                           false, 4096);
+
+  VkMemoryRequirements requirements{};
+  requirements.size = 1u << 20;
+  requirements.alignment = 1024;
+  requirements.memoryTypeBits = 1;
+  emulation.TrackMemoryRequirements(device, requirements);
+
+  VkMemoryAllocateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  info.allocationSize = 1u << 20;
+  info.memoryTypeIndex = 0;
+  VkDeviceMemory first = VK_NULL_HANDLE;
+  VkDeviceMemory second = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.AllocateMemory(device, &info, nullptr, &first),
+            VK_SUCCESS);
+  ASSERT_EQ(emulation.AllocateMemory(device, &info, nullptr, &second),
+            VK_SUCCESS);
+  EXPECT_NE(first, second);
+  ASSERT_EQ(g_pool_blocks.size(), 1u) << "both ranges come from one block";
+  EXPECT_EQ(g_pool_block_sizes[0], 32u << 20);
+
+  const VkImage image = FakeHandle<VkImage>(0x9200);
+  ASSERT_EQ(emulation.BindImageMemory(device, image, first, 0), VK_SUCCESS);
+  ASSERT_EQ(emulation.BindImageMemory(device, image, second, 0), VK_SUCCESS);
+  ASSERT_EQ(g_pool_binds.size(), 2u);
+  EXPECT_EQ(g_pool_binds[0].first, g_pool_blocks[0]);
+  EXPECT_EQ(g_pool_binds[1].first, g_pool_blocks[0]);
+  EXPECT_EQ(g_pool_binds[0].second, 0u);
+  EXPECT_EQ(g_pool_binds[1].second % 65536u, 0u) << "ranges are 64 KiB apart";
+
+  // Freeing both ranges leaves the block in the pool instead of the device.
+  emulation.FreeMemory(device, first, nullptr);
+  emulation.FreeMemory(device, second, nullptr);
+  EXPECT_TRUE(g_pool_freed.empty());
+
+  // A third allocation reuses the freed space without a new block.
+  VkDeviceMemory third = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.AllocateMemory(device, &info, nullptr, &third),
+            VK_SUCCESS);
+  EXPECT_EQ(g_pool_blocks.size(), 1u);
+
+  emulation.DestroyDevice(device);
+  ASSERT_EQ(g_pool_freed.size(), 1u) << "the block goes with the device";
+  EXPECT_EQ(g_pool_freed[0], g_pool_blocks[0]);
+  unsetenv("MOCKTAIL_SUBALLOCATE_MEMORY");
+}
+
+TEST(VulkanEtc2EmulationTest, LeavesMappableMemoryToTheDriver) {
+  setenv("MOCKTAIL_SUBALLOCATE_MEMORY", "1", 1);
+  g_pool_blocks.clear();
+  g_pool_block_sizes.clear();
+
+  const VkDevice device = FakeHandle<VkDevice>(0x9300);
+  VulkanEtc2Emulation emulation;
+  emulation.RegisterDevice(device, FakeHandle<VkPhysicalDevice>(0x9301), true,
+                           HostVisibleMemory(), FakePoolGetDeviceProcAddr,
+                           false, false, false, 4096);
+
+  VkMemoryAllocateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  info.allocationSize = 1u << 20;
+  info.memoryTypeIndex = 0;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  ASSERT_EQ(emulation.AllocateMemory(device, &info, nullptr, &memory),
+            VK_SUCCESS);
+  // The driver answered directly, so its handle is the one the test fake
+  // handed out rather than a pooled range.
+  ASSERT_EQ(g_pool_blocks.size(), 1u);
+  EXPECT_EQ(memory, g_pool_blocks[0]);
+  EXPECT_EQ(g_pool_block_sizes[0], info.allocationSize);
+
+  emulation.DestroyDevice(device);
+  unsetenv("MOCKTAIL_SUBALLOCATE_MEMORY");
+}
+
 }  // namespace
 }  // namespace mocktail::graphics

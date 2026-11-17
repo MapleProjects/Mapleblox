@@ -144,12 +144,16 @@ class VulkanEtc2Emulation final {
   // texture overrides, and usages or flags BC lacks stay decoded.
   // `bc_fallback`: textureCompressionBC is enabled but `bc_textures` is off,
   // so new images are BC only while video memory is low.
+  // `buffer_image_granularity` is the device limit of the same name, which a
+  // suballocated range has to respect when two resources of different kinds
+  // end up next to each other.
   void RegisterDevice(VkDevice device, VkPhysicalDevice physical_device,
                       bool emulated,
                       const VkPhysicalDeviceMemoryProperties& memory,
                       PFN_vkGetDeviceProcAddr get_device_proc_addr,
                       bool timeline_semaphore = false,
-                      bool bc_textures = false, bool bc_fallback = false);
+                      bool bc_textures = false, bool bc_fallback = false,
+                      VkDeviceSize buffer_image_granularity = 0);
   // False when VK_EXT_memory_budget is unavailable. With it, small texture
   // upscaling also leaves a tenth of video memory, and at least 96 MiB, free
   // by the driver's count.
@@ -186,10 +190,26 @@ class VulkanEtc2Emulation final {
   VkResult CreateDescriptorSetLayout(
       VkDevice device, const VkDescriptorSetLayoutCreateInfo* create_info,
       const VkAllocationCallbacks* allocator, VkDescriptorSetLayout* layout);
+  // Replaces vkAllocateMemory. With MOCKTAIL_SUBALLOCATE_MEMORY on, memory
+  // the application cannot map is served from larger blocks owned by the
+  // runtime, and the returned handle only names the range; every call that
+  // takes a VkDeviceMemory translates it back. Off by default.
+  VkResult AllocateMemory(VkDevice device,
+                          const VkMemoryAllocateInfo* allocate_info,
+                          const VkAllocationCallbacks* allocator,
+                          VkDeviceMemory* memory);
   // Called after a successful vkAllocateMemory, so the CPU never maps memory
   // the host cannot read.
   void TrackAllocation(VkDevice device, const VkMemoryAllocateInfo* info,
                        VkDeviceMemory memory);
+  // The largest alignment any resource asked for, which the suballocator
+  // rounds every range to.
+  void TrackMemoryRequirements(VkDevice device,
+                               const VkMemoryRequirements& requirements);
+  VkResult BindImageMemory(VkDevice device, VkImage image,
+                           VkDeviceMemory memory, VkDeviceSize offset);
+  VkResult BindImageMemory2(VkDevice device, std::uint32_t count,
+                            const VkBindImageMemoryInfo* infos);
   VkResult BindBufferMemory(VkDevice device, VkBuffer buffer,
                             VkDeviceMemory memory, VkDeviceSize offset);
   VkResult BindBufferMemory2(VkDevice device, std::uint32_t count,

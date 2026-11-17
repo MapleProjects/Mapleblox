@@ -29,7 +29,7 @@ Los cuatro números en negrita son los que este plan quiere mover. El
 `frame interval mean` de 8,46 ms ya está en el techo de 120 Hz del monitor, así
 que el objetivo no es subir la media sino quitar los picos.
 
-## Fase 0. Icono
+## Fase 0. Icono — hecho, unificación pendiente
 
 Hecho: `packaging/mapleblox.svg` pasa de la gradiente roja a índigo
 (`#8e74e8 → #6c4fd1 → #2f2a6b`), que son los tonos del mark que ya usa la
@@ -42,7 +42,7 @@ desde `mapleblox.svg` con `scripts/generate_desktop_icons.sh` y apuntar
 `MOCKTAIL_WINDOW_ICON_PNG` en `cmake/MocktailPlatformGraphics.cmake:15` al
 archivo nuevo. Sin prisa: los dos son índigo, solo cambia el dibujo.
 
-## Fase 1. Decodificar fuera del hilo que envía
+## Fase 1. Decodificar fuera del hilo que envía — hecho
 
 **Qué se gana.** Quita los dos picos de la tabla: el `vkQueueSubmit` de
 324,59 ms y el frame de 533,52 ms. En régimen estable quita los 16 frames por
@@ -82,7 +82,7 @@ al cliente, cuelga un frame.
 fase 1 necesita su propio interruptor, será `MOCKTAIL_ETC2_RUST_ASYNC=0` para
 volver al decodificado en línea sin cambiar nada más.
 
-## Fase 2. Packer BC7/BC1 en CPU
+## Fase 2. Packer BC7/BC1 en CPU — hecho
 
 **Qué se gana.** El `emulated texture (MB) peak` de 1.492,10 baja a la cuarta
 parte, entre 370 y 400 MB. Es el frente que más cambia para tarjetas de 4 y 6
@@ -110,7 +110,7 @@ encuadre con y sin packer.
 **Reversión.** `MOCKTAIL_ETC2_BC_TRANSCODE=0` ya existe y devuelve el camino
 RGBA8 sin tocar código.
 
-## Fase 3. Pipelines en segundo plano
+## Fase 3. Pipelines en segundo plano — sin trabajo que hacer
 
 **Qué se gana.** Un pico de 101,92 ms y 232 llamadas que suman 254 ms. Poco
 total, pero un tirón de 100 ms se nota.
@@ -129,7 +129,7 @@ en la segunda sesión con el mismo contenido.
 **Riesgo.** Bajo, si se hace solo la parte 1. La parte 2 toca la semántica de
 creación y puede romper si Roblox usa el pipeline antes de que exista.
 
-## Fase 4. Suballocator de memoria
+## Fase 4. Suballocator de memoria — hecho, tras `MOCKTAIL_SUBALLOCATE_MEMORY`
 
 **Qué se gana.** 13,7 s de CPU en 34.892 llamadas, un 0,4% de una corrida de una
 hora. Menos llamadas al kernel y menos fragmentación.
@@ -150,6 +150,58 @@ list, y solo para asignaciones que el guest libera de verdad (los conteos de
 
 **Reversión.** Flag propio, apagado por defecto. No se adopta hasta que la
 corrida larga salga limpia.
+
+## Resultados medidos
+
+Cuatro corridas en la misma máquina, resumidas con
+`scripts/summarize_profile_trace.py`. La línea base son 23 minutos en una
+experiencia ligera; las otras tres son el jardín (`place 10707252093`), una
+escena bastante más pesada, y por eso **el `frame interval` no se puede comparar
+entre columnas**: solo son comparables las llamadas al driver y la VRAM, que no
+dependen de lo que dibuje el juego.
+
+| métrica | base (RGBA8) | fase 1 | fase 2 | fase 2 + 4 |
+| --- | ---: | ---: | ---: | ---: |
+| `emulated texture (MB)` peak | 1.492,10 | 568,81 | **158,47** | **161,44** |
+| `compressed texture (MB)` peak | 232,07 | 89,99 | 87,68 | 90,97 |
+| `vkQueueSubmit` max | 324,59 | 118,03 | 1.016,44 | 1.074,22 |
+| `etc2 decode` count | 8.911 | 366 | 197 | 151 |
+| `etc2 decode` max | 323,41 | **24,19** | 91,97 | 81,16 |
+| `vkAllocateMemory` | 17.719 / 7.152 ms | 1.912 / 667 ms | 749 / 267 ms | **693 / 157 ms** |
+| `vkFreeMemory` | 17.173 / 6.574 ms | 1.912 / 664 ms | 749 / 437 ms | **379 / 289 ms** |
+| `vkCreateGraphicsPipelines` max | 101,92 | 0,57 | 0,85 | 0,62 |
+
+**Fase 1, cumplida en régimen.** `etc2 decode` pasa de 323,41 a 24,19 ms y el
+submit de 324,59 a 118,03 ms, y en el jardín el submit máximo es de 19,48 ms. El
+criterio de 50 ms se cumple en juego pero no en el lote de carga, que sigue
+siendo el peor evento de la corrida.
+
+**Fase 2, cumplida de sobra en VRAM.** El pico baja de 1.492 a 158 MB, un 89%
+menos, muy por debajo del objetivo de 450 MB. El precio está en la carga: el
+decodificado más empaquetado pasa de 24 a 92 ms de máximo y el submit de carga
+de 118 ms a 1.016 ms, porque empaquetar BC7 cuesta del orden de diez veces más
+que decodificar ETC2 y el submit espera a que su lote esté empaquetado. Es un
+tirón único al entrar, con cero eventos del `stall_recorder` después, no una
+regresión de juego.
+
+**Fase 3, sin trabajo que hacer.** El cliente persiste su propio blob de
+`vkCreatePipelineCache` (creció de 8,05 a 8,38 MB entre corridas) y no hay
+`vkGetPipelineCacheData` nuestro. El máximo de `vkCreateGraphicsPipelines` es de
+0,57 ms en régimen y los 101,92 ms de la base eran tres pipelines nuevos
+compilados sin caché a los 43 minutos. No se toca nada.
+
+**Fase 4, cumplida.** Memoria más liberación pasan de 13,7 s a 446 ms, un 97%
+menos, con el criterio de 2 s holgado. De las 693 asignaciones de la corrida,
+511 (el 74%) se sirven del pool y suman 0,6 ms en total; las 182 restantes son
+bloques reales de 32 MB que cuestan 0,86 ms de media. El resto de la mejora
+frente a la base viene de que esta corrida es más corta y de que la imagen host
+comprimida pide menos memoria al driver.
+
+**El frente abierto que queda es el pico de carga.** No lo arregla ninguna de
+las cuatro fases: el `vkQueueSubmit` de ~1 s al entrar es el submit esperando a
+que se empaquete su lote. Las salidas son empaquetar más barato (BC1 para las
+texturas opacas, o un encoder BC7 de un solo modo más rápido) o dejar de esperar
+en ese submit. Cualquiera de las dos es una fase nueva, con su propia medición.
 
 ## Orden y calendario
 

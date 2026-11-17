@@ -413,6 +413,23 @@ std::string TakeEncodeLog(EncodeStats* stats, std::uint64_t now) {
   return line;
 }
 
+// A range of a pooled block, handed to the application as if it were its own
+// allocation.
+struct PooledRange {
+  VkDeviceMemory block = VK_NULL_HANDLE;
+  VkDeviceSize offset = 0;
+  VkDeviceSize size = 0;
+};
+
+struct PoolBlock {
+  VkDevice device = VK_NULL_HANDLE;
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceSize size = 0;
+  std::uint32_t type = 0;
+  // Free ranges by offset, merged with their neighbours.
+  std::vector<std::pair<VkDeviceSize, VkDeviceSize>> free;
+};
+
 struct HostDevice {
   VkDevice device = VK_NULL_HANDLE;
   bool emulated = false;
@@ -428,6 +445,11 @@ struct HostDevice {
   PFN_vkCreateDescriptorSetLayout create_descriptor_set_layout = nullptr;
   PFN_vkBindBufferMemory bind_buffer_memory = nullptr;
   PFN_vkBindBufferMemory2 bind_buffer_memory2 = nullptr;
+  PFN_vkBindImageMemory bind_image_memory = nullptr;
+  PFN_vkBindImageMemory2 bind_image_memory2 = nullptr;
+  // Device limit of the same name, which a suballocated range has to respect
+  // when two resources of different kinds end up next to each other.
+  VkDeviceSize buffer_image_granularity = 0;
   PFN_vkMapMemory map_memory = nullptr;
   PFN_vkMapMemory2 map_memory2 = nullptr;
   PFN_vkUnmapMemory unmap_memory = nullptr;
@@ -674,6 +696,13 @@ constexpr VkDeviceSize kMaxGpuStagingBlocks = 8;
 // a band of this size keeps every worker busy for a few milliseconds and still
 // balances the last one.
 constexpr std::uint32_t kPackBlocksPerBand = 1024;
+// Size of the blocks the memory suballocator hands ranges out of, and how many
+// fully free blocks of one memory type it keeps for reuse.
+constexpr VkDeviceSize kPoolBlockBytes = 32u * 1024u * 1024u;
+constexpr std::size_t kIdlePoolBlocks = 2;
+// Ranges start on this boundary at least, whatever the device reports, so a
+// resource alignment of up to 64 KiB is always met.
+constexpr VkDeviceSize kPoolMinimumAlignment = 64u * 1024u;
 
 // A growable byte buffer that leaves new bytes uninitialized. The gather
 // writes every byte it later reads, and zeroing a multi-megabyte buffer is
@@ -1553,6 +1582,108 @@ struct VulkanEtc2Emulation::State {
   static constexpr std::size_t kTopFilterSlots = std::size_t{1} << 16;
   std::unique_ptr<std::atomic<std::uint16_t>[]> top_filter{
       new std::atomic<std::uint16_t>[kTopFilterSlots]()};
+
+  // Memory the application allocates, served from blocks of the runtime's
+  // own when MOCKTAIL_SUBALLOCATE_MEMORY is on. `pooled` maps the handle the
+  // application holds to the range it names; every call that takes a
+  // VkDeviceMemory looks it up first.
+  bool suballocates = false;
+  VkDeviceSize pool_alignment = kPoolMinimumAlignment;
+  std::uint64_t next_pooled_handle = 0x4D42ull << 48;
+  std::vector<PoolBlock> pool_blocks;
+  std::unordered_map<VkDeviceMemory, PooledRange> pooled;
+
+  // Takes `size` bytes aligned to `align` from a block of this memory type,
+  // or reports that a new block is needed.
+  bool TakePooledRange(std::uint32_t type, VkDeviceSize size,
+                       VkDeviceSize align, PooledRange* out) {
+    const VkDeviceSize need = (size + align - 1) / align * align;
+    for (PoolBlock& block : pool_blocks) {
+      if (block.type != type) {
+        continue;
+      }
+      for (std::size_t index = 0; index < block.free.size(); ++index) {
+        const VkDeviceSize start =
+            (block.free[index].first + align - 1) / align * align;
+        const VkDeviceSize end = block.free[index].first + block.free[index].second;
+        if (start + need > end) {
+          continue;
+        }
+        const VkDeviceSize head = start - block.free[index].first;
+        const VkDeviceSize tail = end - (start + need);
+        if (head == 0 && tail == 0) {
+          block.free.erase(block.free.begin() + index);
+        } else if (head == 0) {
+          block.free[index] = {start + need, tail};
+        } else if (tail == 0) {
+          block.free[index].second = head;
+        } else {
+          block.free[index].second = head;
+          block.free.insert(block.free.begin() + index + 1, {start + need, tail});
+        }
+        out->block = block.memory;
+        out->offset = start;
+        out->size = need;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void AddPoolBlock(VkDevice device, VkDeviceMemory memory, VkDeviceSize size,
+                    std::uint32_t type) {
+    PoolBlock block;
+    block.device = device;
+    block.memory = memory;
+    block.size = size;
+    block.type = type;
+    block.free.push_back({0, size});
+    pool_blocks.push_back(std::move(block));
+  }
+
+  // Returns a range to its block and reports the block to destroy when it is
+  // whole and there are more idle blocks of its type than are kept.
+  VkDeviceMemory ReturnPooledRange(const PooledRange& range) {
+    for (std::size_t index = 0; index < pool_blocks.size(); ++index) {
+      PoolBlock& block = pool_blocks[index];
+      if (block.memory != range.block) {
+        continue;
+      }
+      auto at = block.free.begin();
+      while (at != block.free.end() && at->first < range.offset) {
+        ++at;
+      }
+      at = block.free.insert(at, {range.offset, range.size});
+      if (at + 1 != block.free.end() &&
+          at->first + at->second == (at + 1)->first) {
+        at->second += (at + 1)->second;
+        block.free.erase(at + 1);
+      }
+      if (at != block.free.begin() &&
+          (at - 1)->first + (at - 1)->second == at->first) {
+        (at - 1)->second += at->second;
+        block.free.erase(at);
+      }
+      if (block.free.size() != 1 || block.free[0].first != 0 ||
+          block.free[0].second != block.size) {
+        return VK_NULL_HANDLE;
+      }
+      std::size_t idle = 0;
+      for (const PoolBlock& other : pool_blocks) {
+        if (other.type == block.type && other.free.size() == 1 &&
+            other.free[0].first == 0 && other.free[0].second == other.size) {
+          ++idle;
+        }
+      }
+      if (idle <= kIdlePoolBlocks) {
+        return VK_NULL_HANDLE;
+      }
+      const VkDeviceMemory memory = block.memory;
+      pool_blocks.erase(pool_blocks.begin() + index);
+      return memory;
+    }
+    return VK_NULL_HANDLE;
+  }
 
   static std::size_t TopSlot(VkImage image) {
     std::uint64_t key = reinterpret_cast<std::uintptr_t>(image);
@@ -4150,7 +4281,7 @@ void VulkanEtc2Emulation::RegisterDevice(
     VkDevice device, VkPhysicalDevice physical_device, bool emulated,
     const VkPhysicalDeviceMemoryProperties& memory,
     PFN_vkGetDeviceProcAddr get_device_proc_addr, bool timeline_semaphore,
-    bool bc_textures, bool bc_fallback) {
+    bool bc_textures, bool bc_fallback, VkDeviceSize buffer_image_granularity) {
   static_cast<void>(physical_device);
   if (device == VK_NULL_HANDLE || get_device_proc_addr == nullptr) {
     return;
@@ -4162,6 +4293,23 @@ void VulkanEtc2Emulation::RegisterDevice(
   dev->bc_textures = emulated && bc_textures;
   dev->bc_fallback = emulated && !bc_textures && bc_fallback;
   dev->memory = memory;
+  {
+    const char* request = std::getenv("MOCKTAIL_SUBALLOCATE_MEMORY");
+    const bool wanted =
+        request != nullptr && std::strcmp(request, "0") != 0 && emulated;
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->suballocates = wanted;
+    state_->pool_alignment = std::max({kPoolMinimumAlignment,
+                                       buffer_image_granularity,
+                                       state_->pool_alignment});
+    if (wanted) {
+      std::fprintf(stderr,
+                   "  [vulkan] memory suballocator on, ranges aligned to "
+                   "%llu KiB (MOCKTAIL_SUBALLOCATE_MEMORY)\n",
+                   static_cast<unsigned long long>(state_->pool_alignment /
+                                                   1024));
+    }
+  }
   if (emulated) {
     VkDeviceSize video_memory = 0;
     std::uint32_t video_heap = VK_MAX_MEMORY_HEAPS;
@@ -4196,6 +4344,11 @@ void VulkanEtc2Emulation::RegisterDevice(
       DeviceProc<PFN_vkBindBufferMemory>(get, device, "vkBindBufferMemory");
   dev->bind_buffer_memory2 = DeviceProc<PFN_vkBindBufferMemory2>(
       get, device, "vkBindBufferMemory2", "vkBindBufferMemory2KHR");
+  dev->bind_image_memory =
+      DeviceProc<PFN_vkBindImageMemory>(get, device, "vkBindImageMemory");
+  dev->bind_image_memory2 = DeviceProc<PFN_vkBindImageMemory2>(
+      get, device, "vkBindImageMemory2", "vkBindImageMemory2KHR");
+  dev->buffer_image_granularity = buffer_image_granularity;
   dev->map_memory = DeviceProc<PFN_vkMapMemory>(get, device, "vkMapMemory");
   dev->map_memory2 = DeviceProc<PFN_vkMapMemory2>(get, device, "vkMapMemory2",
                                                   "vkMapMemory2KHR");
@@ -4461,6 +4614,25 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
     }
     for (const auto& block : doomed) {
       DestroyStagingBlock(*dev, *block);
+    }
+    std::vector<VkDeviceMemory> pool_blocks;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      for (auto it = state_->pool_blocks.begin();
+           it != state_->pool_blocks.end();) {
+        if (it->device == device) {
+          pool_blocks.push_back(it->memory);
+          it = state_->pool_blocks.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      state_->pooled.clear();
+    }
+    if (dev->free_memory != nullptr) {
+      for (VkDeviceMemory block : pool_blocks) {
+        dev->free_memory(device, block, nullptr);
+      }
     }
     if (dev->timeline != VK_NULL_HANDLE && dev->destroy_semaphore != nullptr) {
       dev->destroy_semaphore(device, dev->timeline, nullptr);
@@ -5075,6 +5247,122 @@ std::uint64_t Etc2FailureCount(const char* message) {
   return total;
 }
 
+namespace {
+
+// Whether the suballocator may serve this allocation: a memory type the
+// application cannot map, so no map, flush or invalidate ever names a range,
+// and no dedicated allocation, which the driver has to place itself.
+bool PoolableType(const HostDevice& dev, const VkMemoryAllocateInfo& info) {
+  if (info.memoryTypeIndex >= dev.memory.memoryTypeCount ||
+      info.allocationSize == 0 ||
+      info.allocationSize > kPoolBlockBytes / 2) {
+    return false;
+  }
+  const VkMemoryPropertyFlags flags =
+      dev.memory.memoryTypes[info.memoryTypeIndex].propertyFlags;
+  if ((flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)) != 0) {
+    return false;
+  }
+  // The chain has to be one the pool can reproduce when it allocates the
+  // block: allocation flags only. Dedicated, exported, imported and imported
+  // host-pointer memory all pin the placement to this one allocation.
+  for (const auto* next = static_cast<const VkBaseInStructure*>(info.pNext);
+       next != nullptr; next = next->pNext) {
+    if (next->sType != VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+VkResult VulkanEtc2Emulation::AllocateMemory(
+    VkDevice device, const VkMemoryAllocateInfo* allocate_info,
+    const VkAllocationCallbacks* allocator, VkDeviceMemory* memory) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->allocate_memory == nullptr || memory == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  if (allocate_info == nullptr || !dev->emulated || !state_->suballocates ||
+      !PoolableType(*dev, *allocate_info)) {
+    const VkResult result =
+        dev->allocate_memory(device, allocate_info, allocator, memory);
+    if (result == VK_SUCCESS && dev->emulated && allocate_info != nullptr) {
+      const bool readable =
+          allocate_info->memoryTypeIndex < dev->memory.memoryTypeCount &&
+          (dev->memory.memoryTypes[allocate_info->memoryTypeIndex].propertyFlags &
+           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      state_->host_readable[*memory] = readable;
+    }
+    return result;
+  }
+  const std::uint32_t type = allocate_info->memoryTypeIndex;
+  const VkDeviceSize size = allocate_info->allocationSize;
+  PooledRange range;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->TakePooledRange(type, size, state_->pool_alignment, &range)) {
+      const VkDeviceMemory handle =
+          reinterpret_cast<VkDeviceMemory>(state_->next_pooled_handle++);
+      state_->pooled[handle] = range;
+      state_->host_readable[handle] = false;
+      *memory = handle;
+      return VK_SUCCESS;
+    }
+  }
+  // No block has room, so one is allocated outside the lock: the driver call
+  // can take milliseconds and the lock guards every image lookup.
+  const VkDeviceSize block_size =
+      std::max(kPoolBlockBytes, (size + state_->pool_alignment - 1) /
+                                    state_->pool_alignment *
+                                    state_->pool_alignment);
+  VkMemoryAllocateInfo block_info{};
+  block_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  block_info.allocationSize = block_size;
+  block_info.memoryTypeIndex = type;
+  VkDeviceMemory block = VK_NULL_HANDLE;
+  if (dev->allocate_memory(device, &block_info, nullptr, &block) != VK_SUCCESS) {
+    // The pool is an optimisation, so a block that cannot be had leaves the
+    // allocation to the driver.
+    return dev->allocate_memory(device, allocate_info, allocator, memory);
+  }
+  bool took = false;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->AddPoolBlock(device, block, block_size, type);
+    took = state_->TakePooledRange(type, size, state_->pool_alignment, &range);
+    if (took) {
+      const VkDeviceMemory handle =
+          reinterpret_cast<VkDeviceMemory>(state_->next_pooled_handle++);
+      state_->pooled[handle] = range;
+      state_->host_readable[handle] = false;
+      *memory = handle;
+    }
+  }
+  if (took) {
+    return VK_SUCCESS;
+  }
+  return dev->allocate_memory(device, allocate_info, allocator, memory);
+}
+
+void VulkanEtc2Emulation::TrackMemoryRequirements(
+    VkDevice device, const VkMemoryRequirements& requirements) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || !dev->emulated || !state_->suballocates) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(state_->mutex);
+  const VkDeviceSize alignment =
+      std::max({requirements.alignment, dev->buffer_image_granularity,
+                kPoolMinimumAlignment});
+  if (alignment > state_->pool_alignment) {
+    state_->pool_alignment = alignment;
+  }
+}
+
 void VulkanEtc2Emulation::TrackAllocation(VkDevice device,
                                           const VkMemoryAllocateInfo* info,
                                           VkDeviceMemory memory) {
@@ -5091,6 +5379,13 @@ void VulkanEtc2Emulation::TrackAllocation(VkDevice device,
   state_->host_readable[memory] = readable;
 }
 
+// The block and offset a handle really names, which is the range itself for a
+// pooled allocation and the handle as it came for everything else.
+struct RealBinding {
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  VkDeviceSize offset = 0;
+};
+
 VkResult VulkanEtc2Emulation::BindBufferMemory(VkDevice device, VkBuffer buffer,
                                                VkDeviceMemory memory,
                                                VkDeviceSize offset) {
@@ -5098,8 +5393,17 @@ VkResult VulkanEtc2Emulation::BindBufferMemory(VkDevice device, VkBuffer buffer,
   if (dev == nullptr || dev->bind_buffer_memory == nullptr) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const VkResult result =
-      dev->bind_buffer_memory(device, buffer, memory, offset);
+  RealBinding binding{memory, offset};
+  if (dev->emulated) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->pooled.find(memory);
+    if (found != state_->pooled.end()) {
+      binding.memory = found->second.block;
+      binding.offset += found->second.offset;
+    }
+  }
+  const VkResult result = dev->bind_buffer_memory(
+      device, buffer, binding.memory, binding.offset);
   if (result == VK_SUCCESS && dev->emulated) {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->buffers[buffer] = {memory, offset};
@@ -5113,7 +5417,23 @@ VkResult VulkanEtc2Emulation::BindBufferMemory2(
   if (dev == nullptr || dev->bind_buffer_memory2 == nullptr) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const VkResult result = dev->bind_buffer_memory2(device, count, infos);
+  const VkBindBufferMemoryInfo* batches = infos;
+  std::vector<VkBindBufferMemoryInfo> translated;
+  if (dev->emulated && infos != nullptr && state_->suballocates) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->pooled.empty()) {
+      translated.assign(infos, infos + count);
+      for (VkBindBufferMemoryInfo& info : translated) {
+        const auto found = state_->pooled.find(info.memory);
+        if (found != state_->pooled.end()) {
+          info.memory = found->second.block;
+          info.memoryOffset += found->second.offset;
+        }
+      }
+      batches = translated.data();
+    }
+  }
+  const VkResult result = dev->bind_buffer_memory2(device, count, batches);
   if (result == VK_SUCCESS && dev->emulated && infos != nullptr) {
     std::lock_guard<std::mutex> lock(state_->mutex);
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -5124,6 +5444,50 @@ VkResult VulkanEtc2Emulation::BindBufferMemory2(
   return result;
 }
 
+VkResult VulkanEtc2Emulation::BindImageMemory(VkDevice device, VkImage image,
+                                              VkDeviceMemory memory,
+                                              VkDeviceSize offset) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->bind_image_memory == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  RealBinding binding{memory, offset};
+  if (dev->emulated) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->pooled.find(memory);
+    if (found != state_->pooled.end()) {
+      binding.memory = found->second.block;
+      binding.offset += found->second.offset;
+    }
+  }
+  return dev->bind_image_memory(device, image, binding.memory, binding.offset);
+}
+
+VkResult VulkanEtc2Emulation::BindImageMemory2(
+    VkDevice device, std::uint32_t count, const VkBindImageMemoryInfo* infos) {
+  const HostDevice* dev = state_->Find(device);
+  if (dev == nullptr || dev->bind_image_memory2 == nullptr) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  const VkBindImageMemoryInfo* batches = infos;
+  std::vector<VkBindImageMemoryInfo> translated;
+  if (dev->emulated && infos != nullptr && state_->suballocates) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->pooled.empty()) {
+      translated.assign(infos, infos + count);
+      for (VkBindImageMemoryInfo& info : translated) {
+        const auto found = state_->pooled.find(info.memory);
+        if (found != state_->pooled.end()) {
+          info.memory = found->second.block;
+          info.memoryOffset += found->second.offset;
+        }
+      }
+      batches = translated.data();
+    }
+  }
+  return dev->bind_image_memory2(device, count, batches);
+}
+
 VkResult VulkanEtc2Emulation::MapMemory(VkDevice device, VkDeviceMemory memory,
                                         VkDeviceSize offset, VkDeviceSize size,
                                         VkMemoryMapFlags flags, void** data) {
@@ -5131,8 +5495,17 @@ VkResult VulkanEtc2Emulation::MapMemory(VkDevice device, VkDeviceMemory memory,
   if (dev == nullptr || dev->map_memory == nullptr) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const VkResult result =
-      dev->map_memory(device, memory, offset, size, flags, data);
+  RealBinding binding{memory, offset};
+  if (dev->emulated) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->pooled.find(memory);
+    if (found != state_->pooled.end()) {
+      binding.memory = found->second.block;
+      binding.offset += found->second.offset;
+    }
+  }
+  const VkResult result = dev->map_memory(device, binding.memory,
+                                          binding.offset, size, flags, data);
   if (result == VK_SUCCESS && dev->emulated && data != nullptr) {
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings[memory] = {*data, offset, size};
@@ -5147,7 +5520,19 @@ VkResult VulkanEtc2Emulation::MapMemory2(VkDevice device,
   if (dev == nullptr || dev->map_memory2 == nullptr) {
     return VK_ERROR_INITIALIZATION_FAILED;
   }
-  const VkResult result = dev->map_memory2(device, info, data);
+  VkMemoryMapInfo translated{};
+  const VkMemoryMapInfo* request = info;
+  if (dev->emulated && info != nullptr) {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto found = state_->pooled.find(info->memory);
+    if (found != state_->pooled.end()) {
+      translated = *info;
+      translated.memory = found->second.block;
+      translated.offset += found->second.offset;
+      request = &translated;
+    }
+  }
+  const VkResult result = dev->map_memory2(device, request, data);
   if (result == VK_SUCCESS && dev->emulated && info != nullptr &&
       data != nullptr) {
     std::lock_guard<std::mutex> lock(state_->mutex);
@@ -5191,13 +5576,29 @@ void VulkanEtc2Emulation::FreeMemory(VkDevice device, VkDeviceMemory memory,
   if (dev == nullptr || dev->free_memory == nullptr) {
     return;
   }
+  VkDeviceMemory idle_block = VK_NULL_HANDLE;
   if (dev->emulated) {
     state_->WaitForReadsOf(memory);
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->mappings.erase(memory);
     state_->host_readable.erase(memory);
+    const auto found = state_->pooled.find(memory);
+    if (found != state_->pooled.end()) {
+      const PooledRange range = found->second;
+      state_->pooled.erase(found);
+      idle_block = state_->ReturnPooledRange(range);
+    } else {
+      idle_block = memory;
+    }
+  } else {
+    idle_block = memory;
   }
-  dev->free_memory(device, memory, allocator);
+  if (idle_block != VK_NULL_HANDLE) {
+    // A pooled handle names a range, not an allocation the driver knows, so
+    // only a block of the pool or a real allocation is freed here.
+    dev->free_memory(device, idle_block,
+                     idle_block == memory ? allocator : nullptr);
+  }
 }
 
 void VulkanEtc2Emulation::DestroyBuffer(VkDevice device, VkBuffer buffer,

@@ -752,6 +752,13 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_PROC(vkCreateSampler)
   MOCKTAIL_VK_PROC(vkBindBufferMemory)
   MOCKTAIL_VK_PROC(vkBindBufferMemory2)
+  MOCKTAIL_VK_PROC(vkBindImageMemory)
+  MOCKTAIL_VK_PROC(vkBindImageMemory2)
+  MOCKTAIL_VK_PROC(vkAllocateMemory)
+  MOCKTAIL_VK_PROC(vkGetImageMemoryRequirements)
+  MOCKTAIL_VK_PROC(vkGetImageMemoryRequirements2)
+  MOCKTAIL_VK_PROC(vkGetBufferMemoryRequirements)
+  MOCKTAIL_VK_PROC(vkGetBufferMemoryRequirements2)
   MOCKTAIL_VK_PROC(vkMapMemory)
   MOCKTAIL_VK_PROC(vkMapMemory2)
   MOCKTAIL_VK_PROC(vkUnmapMemory)
@@ -793,6 +800,11 @@ PFN_vkVoidFunction AdapterProc(const char* name) {
   MOCKTAIL_VK_ALIAS(vkGetPhysicalDeviceImageFormatProperties2KHR,
                     vkGetPhysicalDeviceImageFormatProperties2)
   MOCKTAIL_VK_ALIAS(vkBindBufferMemory2KHR, vkBindBufferMemory2)
+  MOCKTAIL_VK_ALIAS(vkBindImageMemory2KHR, vkBindImageMemory2)
+  MOCKTAIL_VK_ALIAS(vkGetImageMemoryRequirements2KHR,
+                    vkGetImageMemoryRequirements2)
+  MOCKTAIL_VK_ALIAS(vkGetBufferMemoryRequirements2KHR,
+                    vkGetBufferMemoryRequirements2)
   MOCKTAIL_VK_ALIAS(vkCmdCopyImage2KHR, vkCmdCopyImage2)
   MOCKTAIL_VK_ALIAS(vkMapMemory2KHR, vkMapMemory2)
   MOCKTAIL_VK_ALIAS(vkUnmapMemory2KHR, vkUnmapMemory2)
@@ -830,6 +842,12 @@ bool IsEtc2DeviceProc(const char* name) {
       "vkCreateImageView",      "vkCreateSampler",
       "vkBindBufferMemory",
       "vkBindBufferMemory2",    "vkBindBufferMemory2KHR",
+      "vkBindImageMemory",      "vkBindImageMemory2",
+      "vkBindImageMemory2KHR",  "vkAllocateMemory",
+      "vkGetImageMemoryRequirements",  "vkGetImageMemoryRequirements2",
+      "vkGetImageMemoryRequirements2KHR",
+      "vkGetBufferMemoryRequirements", "vkGetBufferMemoryRequirements2",
+      "vkGetBufferMemoryRequirements2KHR",
       "vkMapMemory",            "vkMapMemory2",
       "vkMapMemory2KHR",        "vkUnmapMemory",
       "vkUnmapMemory2",         "vkUnmapMemory2KHR",
@@ -1463,14 +1481,10 @@ VkResult VKAPI_CALL ProfiledCreatePipelineCache(
 VkResult VKAPI_CALL ProfiledAllocateMemory(
     VkDevice device, const VkMemoryAllocateInfo* allocate_info,
     const VkAllocationCallbacks* allocator, VkDeviceMemory* memory) {
-  const auto host = reinterpret_cast<PFN_vkAllocateMemory>(
-      HostDeviceProc(device, "vkAllocateMemory"));
-  if (host == nullptr) {
-    return VK_ERROR_INITIALIZATION_FAILED;
-  }
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkAllocateMemory", "memory");
-  const VkResult result = host(device, allocate_info, allocator, memory);
+  const VkResult result =
+      State().etc2.AllocateMemory(device, allocate_info, allocator, memory);
   if (result == VK_SUCCESS && memory != nullptr) {
     State().etc2.TrackAllocation(device, allocate_info, *memory);
   }
@@ -2108,6 +2122,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
   RegisterHostDeviceDispatch(*device, physical_device,
                              host_get_device_proc_addr);
   VkPhysicalDeviceMemoryProperties memory_properties{};
+  VkPhysicalDeviceProperties device_properties{};
   if (const auto host_memory_properties =
           reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
               HostInstanceProc(instance,
@@ -2115,13 +2130,20 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(
       host_memory_properties != nullptr) {
     host_memory_properties(physical_device, &memory_properties);
   }
+  if (const auto host_properties =
+          reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+              HostInstanceProc(instance, "vkGetPhysicalDeviceProperties"));
+      host_properties != nullptr) {
+    host_properties(physical_device, &device_properties);
+  }
   const bool bc_preferred =
       bc_textures && mocktail::graphics::Etc2BcTranscodeEnabled(
                          std::getenv("MOCKTAIL_ETC2_BC_TRANSCODE"));
-  State().etc2.RegisterDevice(*device, physical_device, etc2_emulated,
-                              memory_properties, host_get_device_proc_addr,
-                              enabled.vulkan12.timelineSemaphore == VK_TRUE,
-                              bc_preferred, bc_textures && !bc_preferred);
+  State().etc2.RegisterDevice(
+      *device, physical_device, etc2_emulated, memory_properties,
+      host_get_device_proc_addr, enabled.vulkan12.timelineSemaphore == VK_TRUE,
+      bc_preferred, bc_textures && !bc_preferred,
+      device_properties.limits.bufferImageGranularity);
   // A physical-device query of a supported device extension needs no
   // enabling on the device, only Vulkan 1.1.
   const auto host_memory_properties2 =
@@ -3173,11 +3195,89 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(
   return State().etc2.CreateSampler(device, create_info, allocator, sampler);
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(
+    VkDevice device, const VkMemoryAllocateInfo* allocate_info,
+    const VkAllocationCallbacks* allocator, VkDeviceMemory* memory) {
+  mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
+                                       "vkAllocateMemory", "memory");
+  scope.Arg("bytes", allocate_info != nullptr
+                         ? static_cast<std::int64_t>(
+                               allocate_info->allocationSize)
+                         : 0);
+  const VkResult result =
+      State().etc2.AllocateMemory(device, allocate_info, allocator, memory);
+  scope.Arg("result", result);
+  return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetImageMemoryRequirements(
+    VkDevice device, VkImage image, VkMemoryRequirements* requirements) {
+  const auto host = reinterpret_cast<PFN_vkGetImageMemoryRequirements>(
+      HostDeviceProc(device, "vkGetImageMemoryRequirements"));
+  if (host != nullptr) {
+    host(device, image, requirements);
+  }
+  if (requirements != nullptr) {
+    State().etc2.TrackMemoryRequirements(device, *requirements);
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetImageMemoryRequirements2(
+    VkDevice device, const VkImageMemoryRequirementsInfo2* info,
+    VkMemoryRequirements2* requirements) {
+  const auto host = reinterpret_cast<PFN_vkGetImageMemoryRequirements2>(
+      HostDeviceProc(device, "vkGetImageMemoryRequirements2"));
+  if (host != nullptr) {
+    host(device, info, requirements);
+  }
+  if (requirements != nullptr) {
+    State().etc2.TrackMemoryRequirements(device, requirements->memoryRequirements);
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(
+    VkDevice device, VkBuffer buffer, VkMemoryRequirements* requirements) {
+  const auto host = reinterpret_cast<PFN_vkGetBufferMemoryRequirements>(
+      HostDeviceProc(device, "vkGetBufferMemoryRequirements"));
+  if (host != nullptr) {
+    host(device, buffer, requirements);
+  }
+  if (requirements != nullptr) {
+    State().etc2.TrackMemoryRequirements(device, *requirements);
+  }
+}
+
+VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements2(
+    VkDevice device, const VkBufferMemoryRequirementsInfo2* info,
+    VkMemoryRequirements2* requirements) {
+  const auto host = reinterpret_cast<PFN_vkGetBufferMemoryRequirements2>(
+      HostDeviceProc(device, "vkGetBufferMemoryRequirements2"));
+  if (host != nullptr) {
+    host(device, info, requirements);
+  }
+  if (requirements != nullptr) {
+    State().etc2.TrackMemoryRequirements(device, requirements->memoryRequirements);
+  }
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory(VkDevice device,
                                                   VkBuffer buffer,
                                                   VkDeviceMemory memory,
                                                   VkDeviceSize offset) {
   return State().etc2.BindBufferMemory(device, buffer, memory, offset);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory(VkDevice device,
+                                                 VkImage image,
+                                                 VkDeviceMemory memory,
+                                                 VkDeviceSize offset) {
+  return State().etc2.BindImageMemory(device, image, memory, offset);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkBindImageMemory2(
+    VkDevice device, std::uint32_t count,
+    const VkBindImageMemoryInfo* infos) {
+  return State().etc2.BindImageMemory2(device, count, infos);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL vkBindBufferMemory2(
