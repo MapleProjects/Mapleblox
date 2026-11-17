@@ -157,6 +157,7 @@ struct AdapterState {
     PFN_vkAcquireNextImageKHR acquire_next_image = nullptr;
     PFN_vkAcquireNextImage2KHR acquire_next_image2 = nullptr;
     PFN_vkWaitForFences wait_for_fences = nullptr;
+    PFN_vkGetFenceStatus get_fence_status = nullptr;
     PFN_vkWaitSemaphores wait_semaphores = nullptr;
     PFN_vkWaitSemaphoresKHR wait_semaphores_khr = nullptr;
     PFN_vkDeviceWaitIdle device_wait_idle = nullptr;
@@ -473,6 +474,8 @@ void RegisterHostDeviceDispatch(VkDevice device,
       get_device_proc_addr(device, "vkAcquireNextImage2KHR"));
   dispatch.wait_for_fences = reinterpret_cast<PFN_vkWaitForFences>(
       get_device_proc_addr(device, "vkWaitForFences"));
+  dispatch.get_fence_status = reinterpret_cast<PFN_vkGetFenceStatus>(
+      get_device_proc_addr(device, "vkGetFenceStatus"));
   dispatch.wait_semaphores = reinterpret_cast<PFN_vkWaitSemaphores>(
       get_device_proc_addr(device, "vkWaitSemaphores"));
   dispatch.wait_semaphores_khr = reinterpret_cast<PFN_vkWaitSemaphoresKHR>(
@@ -2476,8 +2479,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
     VkDevice device, std::uint32_t fence_count, const VkFence* fences,
     VkBool32 wait_all, std::uint64_t timeout) {
   VulkanCallObservation observation("vkWaitForFences");
-  const PFN_vkWaitForFences host_wait =
-      HostDispatchForDevice(device).wait_for_fences;
+  const AdapterState::DeviceDispatch& dispatch = HostDispatchForDevice(device);
+  const PFN_vkWaitForFences host_wait = dispatch.wait_for_fences;
+  const PFN_vkGetFenceStatus host_status = dispatch.get_fence_status;
   if (host_wait == nullptr) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
@@ -2493,24 +2497,50 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
   const bool fps_trace = FpsTraceEnabled();
   const std::uint64_t fence_start_ns = MonotonicNanos();
   VkResult result = VK_TIMEOUT;
-  std::uint64_t remaining = timeout;
-  for (;;) {
-    const std::uint64_t slice =
-        timeout == kInfiniteTimeout ? kHangSliceNs
-                                    : std::min(remaining, kHangSliceNs);
-    result = host_wait(device, fence_count, fences, wait_all, slice);
-    if (result != VK_TIMEOUT) {
-      break;
-    }
-    if (ExceededHangBudget("vkWaitForFences", fence_start_ns, nullptr)) {
-      result = VK_ERROR_DEVICE_LOST;
-      break;
-    }
-    if (timeout != kInfiniteTimeout) {
-      remaining = remaining > slice ? remaining - slice : 0;
-      if (remaining == 0) {
-        break;  // the application's own timeout expired: keep VK_TIMEOUT
+  if (host_status == nullptr || fence_count == 0 || fences == nullptr) {
+    result = host_wait(device, fence_count, fences, wait_all, timeout);
+  } else {
+    // Poll the fence state instead of blocking inside the driver. When the GPU
+    // stops making progress the driver's own wait ignores the timeout it was
+    // given and sleeps until its device-lost detection fires (12 s on NVIDIA
+    // 620.70), which is what froze the render thread. vkGetFenceStatus never
+    // blocks, so the budget below is always honoured.
+    const std::uint64_t budget_ns = HangBudgetNs();
+    for (;;) {
+      bool all_signaled = true;
+      bool any_signaled = false;
+      for (std::uint32_t index = 0; index < fence_count; ++index) {
+        const VkResult status = host_status(device, fences[index]);
+        if (status == VK_ERROR_DEVICE_LOST) {
+          result = VK_ERROR_DEVICE_LOST;
+          break;
+        }
+        if (status == VK_SUCCESS) {
+          any_signaled = true;
+        } else {
+          all_signaled = false;
+        }
       }
+      if (result == VK_ERROR_DEVICE_LOST) {
+        break;
+      }
+      if (wait_all ? all_signaled : any_signaled) {
+        result = VK_SUCCESS;
+        break;
+      }
+      const std::uint64_t elapsed_ns = MonotonicNanos() - fence_start_ns;
+      if (budget_ns != 0 && elapsed_ns >= budget_ns) {
+        ExceededHangBudget("vkWaitForFences", fence_start_ns, nullptr);
+        result = VK_ERROR_DEVICE_LOST;
+        break;
+      }
+      if (timeout != kInfiniteTimeout && elapsed_ns >= timeout) {
+        result = VK_TIMEOUT;
+        break;
+      }
+      timespec pause{};
+      pause.tv_nsec = 250000;  // 250 us between status queries
+      nanosleep(&pause, nullptr);
     }
   }
   NoteSlowCall("vkWaitForFences", fence_start_ns);
