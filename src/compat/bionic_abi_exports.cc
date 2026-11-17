@@ -190,9 +190,9 @@ int __system_property_get(const char* name, char* value) {
   } else if (std::strcmp(name, "ro.product.cpu.abilist32") == 0) {
     result = "";
   } else if (std::strcmp(name, "ro.product.manufacturer") == 0) {
-    result = EnvironmentOr("MOCKTAIL_DEVICE_MANUFACTURER", "Mocktail");
+    result = EnvironmentOr("MOCKTAIL_DEVICE_MANUFACTURER", "Mapleblox");
   } else if (std::strcmp(name, "ro.product.model") == 0) {
-    result = EnvironmentOr("MOCKTAIL_DEVICE_MODEL", "Mocktail Linux");
+    result = EnvironmentOr("MOCKTAIL_DEVICE_MODEL", "Mapleblox Linux");
   } else if (std::strcmp(name, "ro.product.brand") == 0) {
     result = EnvironmentOr("MOCKTAIL_DEVICE_BRAND", "google");
   } else if (std::strcmp(name, "ro.product.device") == 0) {

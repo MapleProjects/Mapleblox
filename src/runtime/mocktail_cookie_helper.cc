@@ -56,7 +56,7 @@ int main(int argc, char**) {
     case 'S':
       if (separator + 1 < request.size() &&
           secret_password_store_sync(
-              &schema, SECRET_COLLECTION_DEFAULT, "Mocktail Roblox session",
+              &schema, SECRET_COLLECTION_DEFAULT, "Mapleblox Roblox session",
               request.c_str() + separator + 1, nullptr, &error, "profile",
               profile.c_str(), nullptr))
         status = 'F';

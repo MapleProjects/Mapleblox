@@ -15,7 +15,7 @@ namespace mocktail {
 namespace runtime {
 
 inline constexpr std::string_view kAppImageMenuEntryName =
-    "io.github.CoderDayton.nightcap.appimage.desktop";
+    "io.github.MapleProjects.mapleblox.appimage.desktop";
 
 struct AppImageMenuPaths {
   std::filesystem::path applications_dir;

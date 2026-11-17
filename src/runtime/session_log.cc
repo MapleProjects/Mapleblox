@@ -139,7 +139,7 @@ int CreateSessionFile(const std::filesystem::path& sessions,
       return -1;
     }
   }
-  *error = "too many Mocktail sessions started in the same second";
+  *error = "too many Mapleblox sessions started in the same second";
   return -1;
 }
 
@@ -697,7 +697,7 @@ std::string SessionLog::Header(const Environment& environment,
   }
   output << " build=" << build.build_type << " compiler=\"" << build.compiler
          << "\"\n"
-         << "[nightcap] started=" << IsoLocalTimestamp(started_at_)
+         << "[mapleblox] started=" << IsoLocalTimestamp(started_at_)
          << " package=" << PackageKind(environment, executable)
          << " target=" << build.target;
   if (has_system) {
@@ -715,10 +715,10 @@ std::string SessionLog::Header(const Environment& environment,
          << "\" gpu_driver=\"" << graphics.drivers
          << "\" display=" << DisplayServer(environment) << " graphics="
          << (graphics_backend.empty() ? "unknown" : graphics_backend) << '\n'
-         << "[nightcap] executable=" << DisplayPath(executable, paths)
+         << "[mapleblox] executable=" << DisplayPath(executable, paths)
          << " config=" << DisplayPath(paths.config_file(), paths) << '\n'
-         << "[nightcap] log=" << DisplayPath(path_, paths) << '\n';
-  if (!warning_.empty()) output << "[nightcap] warning=" << warning_ << '\n';
+         << "[mapleblox] log=" << DisplayPath(path_, paths) << '\n';
+  if (!warning_.empty()) output << "[mapleblox] warning=" << warning_ << '\n';
   return output.str();
 }
 
@@ -765,7 +765,7 @@ bool ReadLatestSessionLog(const std::filesystem::path& logs_root,
   const std::filesystem::path latest = logs_root / "latest.log";
   std::ifstream input(latest, std::ios::binary);
   if (!input) {
-    *error = errno == ENOENT ? "No log yet. Start Nightcap once, then copy it."
+    *error = errno == ENOENT ? "No log yet. Start Mapleblox once, then copy it."
                              : "Cannot read " + latest.string() + ": " +
                                    std::strerror(errno);
     return false;

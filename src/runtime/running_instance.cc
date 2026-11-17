@@ -154,7 +154,7 @@ RunningInstance FindRunningInstance(const std::filesystem::path& lock_file) {
 namespace {
 
 constexpr char kUnreachableError[] =
-    "Nightcap is running where the settings window cannot reach it";
+    "Mapleblox is running where the settings window cannot reach it";
 
 bool StopInstance(const std::filesystem::path& lock_file,
                   const RunningInstance& instance,
@@ -167,13 +167,13 @@ bool StopInstance(const std::filesystem::path& lock_file,
     return false;
   }
   if (kill(instance.pid, SIGTERM) != 0 && errno != ESRCH) {
-    *error = "cannot close Nightcap: " + std::string(std::strerror(errno));
+    *error = "cannot close Mapleblox: " + std::string(std::strerror(errno));
     return false;
   }
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (FindRunningInstance(lock_file).running) {
     if (std::chrono::steady_clock::now() >= deadline) {
-      *error = "Nightcap did not close within " +
+      *error = "Mapleblox did not close within " +
                std::to_string(timeout.count() / 1000) +
                " seconds. If it closes later, start it again";
       return false;
@@ -302,7 +302,7 @@ bool RestartRunningInstance(const std::filesystem::path& lock_file,
   const std::optional<LaunchCommand> command =
       instance.running ? ReadLaunchCommand(instance.pid) : std::nullopt;
   if (instance.running && !command.has_value()) {
-    *error = "cannot read how Nightcap was started, so it was left running";
+    *error = "cannot read how Mapleblox was started, so it was left running";
     return false;
   }
   return StopInstance(lock_file, instance, timeout, error) &&

@@ -199,7 +199,7 @@ void MemoryLimitWatchdog::Run() {
       const int length = std::snprintf(
           message.data(), message.size(),
           "[memory] limit exceeded: RSS+swap=%llu MiB, limit=%llu MiB; "
-          "terminating Mocktail with exit 137\n",
+          "terminating Mapleblox with exit 137\n",
           static_cast<unsigned long long>(used_mb),
           static_cast<unsigned long long>(limit_mb));
       if (length > 0) {

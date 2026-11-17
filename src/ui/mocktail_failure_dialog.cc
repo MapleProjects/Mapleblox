@@ -20,7 +20,7 @@ constexpr char kProgressPacket = 'P';
 constexpr char kLogFolderPacket = 'L';
 constexpr std::size_t kMaximumPacketBytes = 4096;
 constexpr std::string_view kDefaultMessage =
-    "Nightcap closed unexpectedly because of an internal error.";
+    "Mapleblox closed unexpectedly because of an internal error.";
 constexpr std::string_view kDefaultProgressMessage = "Installing Roblox...";
 // Keep AdwAlertDialog semantics while preventing host GTK themes such as
 // Breeze from replacing the compact dark crash-card appearance.
@@ -157,7 +157,7 @@ void InstallProgressStyle(GdkDisplay* display) {
 }
 
 bool InitializeUi(UiStyle style) {
-  g_set_application_name("Nightcap");
+  g_set_application_name("Mapleblox");
   // GTK names a window's app after the program. Without this, docks cannot
   // tie the window to Nightcap's desktop entry and give it an icon of its own.
   g_set_prgname(mocktail::platform::kApplicationId);
@@ -230,7 +230,7 @@ void OnDialogResponse(AdwAlertDialog*, const char* response,
 }
 
 int ShowDialog(std::string_view requested_message,
-               const char* heading = "Nightcap",
+               const char* heading = "Mapleblox",
                const char* response_label = "Close",
                std::string_view log_folder = {}) {
   if (!InitializeUi(UiStyle::kDialog)) {
@@ -331,7 +331,7 @@ void PresentProgressWindow(ProgressState* state, std::string_view message) {
   GtkWidget* window_widget = adw_window_new();
   state->window = GTK_WINDOW(g_object_ref_sink(window_widget));
   gtk_widget_add_css_class(window_widget, "mocktail-update-progress");
-  gtk_window_set_title(state->window, "Nightcap");
+  gtk_window_set_title(state->window, "Mapleblox");
   gtk_window_set_default_size(state->window, 470, 640);
 
   GtkWidget* toolbar_widget = adw_toolbar_view_new();
@@ -439,7 +439,7 @@ int MonitorParent() {
       continue;
     }
     if (received <= 0) {
-      return ShowDialog(message, "Nightcap", "Close", log_folder);
+      return ShowDialog(message, "Mapleblox", "Close", log_folder);
     }
     const std::string_view payload(packet + 1,
                                    static_cast<std::size_t>(received - 1));
@@ -451,7 +451,7 @@ int MonitorParent() {
         log_folder.assign(payload);
         break;
       case kFailurePacket:
-        return ShowDialog(message, "Nightcap", "Close", log_folder);
+        return ShowDialog(message, "Mapleblox", "Close", log_folder);
       case kSuccessPacket:
         return EXIT_SUCCESS;
       default:

@@ -27,7 +27,7 @@ inline constexpr std::string_view kGuestSplitApkHashKey = "x86_64_split_apk";
 inline constexpr std::string_view kGuestCpuName = "x86_64";
 inline constexpr int kGuestElfMachine = EM_X86_64;
 #else
-#error "mocktail only supports aarch64 and x86_64 hosts"
+#error "Mapleblox only supports aarch64 and x86_64 hosts"
 #endif
 
 // APK zip entry holding the guest libroblox.so.

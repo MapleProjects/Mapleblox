@@ -18,8 +18,8 @@ namespace {
 
 constexpr std::string_view kDefaultRuntimeConfig =
     R"yaml(# Modified by vii from komaruworld/mocktail. See README "About this fork".
-# Mocktail configuration.
-# The file is created once with mode 0600. Mocktail never replaces your edits.
+# Mapleblox configuration.
+# The file is created once with mode 0600. Mapleblox never replaces your edits.
 
 # Integer: configuration schema version. Only version 1 is supported.
 version: 1
@@ -64,7 +64,7 @@ graphics:
   # without a working Vulkan driver; OpenGL ES 3.0 or newer is required.
   # Recommended values: direct-vulkan, opengl, system, angle-vulkan.
   backend: direct-vulkan
-  # Optional string or integer: Mocktail frame-rate override. Leave commented
+  # Optional string or integer: Mapleblox frame-rate override. Leave commented
   # (or use -1) to let Roblox Basic Settings own the cap. Supported overrides:
   # display, unlimited, or any positive integer. Values up to 240 are forwarded
   # to DFIntTaskSchedulerTargetFps; unlimited and higher values set FramerateCap
@@ -97,7 +97,7 @@ performance:
   # available to Roblox worker pools; `latency` preserves Roblox-managed pool
   # sizes and coalesces midphase work. Supported: auto, latency, throughput.
   physics_worker_mode: throughput
-  # Integer MiB (default: 0): hard RAM cap for the Mocktail process tree.
+  # Integer MiB (default: 0): hard RAM cap for the Mapleblox process tree.
   # 0 disables the cap. cgroup v2 also disables swap; other Linux systems use
   # an RSS+swap watchdog. 6144 is a conservative starting point for 32 GiB RAM.
   memory_limit_mb: 0
@@ -160,7 +160,7 @@ integrations:
     # or ~/.config/Fleasion/proxy_ca/ca.crt. Never select ca.key.
     # ca_certificate: /home/user/.config/Fleasion/proxy_ca/ca.crt
   discord_rpc:
-    # Boolean (default: true): publish Nightcap activity to Discord Desktop.
+    # Boolean (default: true): publish Mapleblox activity to Discord Desktop.
     # This never signs in to Discord and never reads an account token.
     enabled: true
     # Boolean (default: true): show the current Roblox experience name.
@@ -220,7 +220,7 @@ network:
   # proxy_port: 8080
   # proxy_username: "user"
   # proxy_password: "password"
-  # Absolute path (optional): custom PEM CA bundle. Mocktail reads this file
+  # Absolute path (optional): custom PEM CA bundle. Mapleblox reads this file
   # directly and does not replace it during Roblox payload updates.
   # ca_bundle: /home/user/.config/mocktail/cacert.pem
 

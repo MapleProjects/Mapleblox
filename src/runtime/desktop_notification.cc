@@ -34,7 +34,7 @@ DesktopNotificationCall BuildDesktopNotificationCall(bool sandboxed,
     g_variant_builder_add(&fields, "{sv}", "body",
                           g_variant_new_string(owned_body.c_str()));
     call.parameters = g_variant_ref_sink(
-        g_variant_new("(sa{sv})", "nightcap", &fields));
+        g_variant_new("(sa{sv})", "mapleblox", &fields));
     return call;
   }
   call.bus_name = "org.freedesktop.Notifications";
@@ -42,7 +42,7 @@ DesktopNotificationCall BuildDesktopNotificationCall(bool sandboxed,
   call.interface_name = "org.freedesktop.Notifications";
   call.method = "Notify";
   call.parameters = g_variant_ref_sink(g_variant_new(
-      "(susssasa{sv}i)", "Nightcap", 0u, "io.github.CoderDayton.nightcap",
+      "(susssasa{sv}i)", "Mapleblox", 0u, "io.github.MapleProjects.mapleblox",
       owned_title.c_str(), owned_body.c_str(), nullptr, nullptr, -1));
   return call;
 }

@@ -125,7 +125,7 @@ PlatformCacheMigrationResult MigratePlatformProfileCaches(
   const std::filesystem::path normalized_files = files_root.lexically_normal();
   if (!normalized_data.is_absolute() || !normalized_files.is_absolute() ||
       !HasPathPrefix(normalized_files, normalized_data)) {
-    result.error = "platform cache path escapes the Mocktail Android data root";
+    result.error = "platform cache path escapes the Mapleblox Android data root";
     return result;
   }
 
@@ -134,7 +134,7 @@ PlatformCacheMigrationResult MigratePlatformProfileCaches(
   result.fingerprint_file = normalized_data / ".mocktail-platform-profile.json";
   std::error_code filesystem_error;
   if (!RuntimePaths::EnsureDirectory(normalized_data, &filesystem_error)) {
-    result.error = "cannot create Mocktail Android data root";
+    result.error = "cannot create Mapleblox Android data root";
     return result;
   }
 

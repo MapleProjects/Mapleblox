@@ -44,10 +44,10 @@ struct PlatformIdentity {
   bool keyboard_enabled = true;
   bool pc_hardware = true;
   std::string platform_name = "Linux";
-  std::string device_name = "Mocktail Headless";
-  std::string manufacturer = "Mocktail";
-  std::string model = "Mocktail Headless";
-  std::string brand = "Mocktail";
+  std::string device_name = "Mapleblox Headless";
+  std::string manufacturer = "Mapleblox";
+  std::string model = "Mapleblox Headless";
+  std::string brand = "Mapleblox";
 #if defined(__aarch64__)
   std::string device_code = "linux-arm64";
   std::string device_sku = "mocktail-arm64";

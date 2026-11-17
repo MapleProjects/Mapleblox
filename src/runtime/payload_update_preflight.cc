@@ -439,7 +439,7 @@ PayloadUpdatePreflightResult RunPayloadUpdatePreflight(
   if (helper.empty()) {
     if (force_run_latest ||
         environment.HasNonEmpty("MOCKTAIL_RUNTIME_LIBRARY_DIR")) {
-      result.error = "cannot locate the Mocktail update helper";
+      result.error = "cannot locate the Mapleblox update helper";
     }
     return result;
   }

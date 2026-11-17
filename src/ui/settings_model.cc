@@ -720,7 +720,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {},
             false,
             "One font for Roblox's menus and games. Emoji and other scripts "
-            "keep Roblox's fonts. A new pick shows the next time Nightcap "
+            "keep Roblox's fonts. A new pick shows the next time Mapleblox "
             "starts."},
            {"Sky",
             {
@@ -742,7 +742,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {},
             {},
             false,
-            "The sky in games. A new pick shows the next time Nightcap "
+            "The sky in games. A new pick shows the next time Mapleblox "
             "starts. Right-click a sky to remove it."},
        }},
       {"files",
@@ -833,7 +833,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {
                 {"performance.memory_limit_mb",
                  "Memory limit",
-                 "Hard cap in MiB for Nightcap and Roblox.",
+                 "Hard cap in MiB for Mapleblox and Roblox.",
                  SettingKind::kNumber,
                  {},
                  "0",
@@ -935,7 +935,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {},
             {},
             false,
-            "Empty Application ID uses Nightcap's own Discord app."},
+            "Empty Application ID uses Mapleblox's own Discord app."},
            {"Join button",
             {
                 {"integrations.discord_rpc.join.enabled",
@@ -1070,7 +1070,7 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "apk-pure",
                  {}},
                 {"updates.launch_after_update",
-                 "Start Nightcap after a scripted update",
+                 "Start Mapleblox after a scripted update",
                  "Used by scripts/auto_update_roblox.sh.",
                  SettingKind::kToggle,
                  {},
@@ -1104,7 +1104,7 @@ const std::vector<SettingsPage>& SettingsPages() {
                  "Keep the sign-in in the keyring",
                  "Saves the Roblox sign-in with libsecret, such as GNOME "
                  "Keyring or KWallet, instead of a private file. Applies the "
-                 "next time Nightcap starts. Turning it off signs you out.",
+                 "next time Mapleblox starts. Turning it off signs you out.",
                  SettingKind::kToggle,
                  {},
                  "false",
@@ -1127,7 +1127,7 @@ const std::vector<SettingsPage>& SettingsPages() {
             {},
             false,
             "Leave the Roblox library empty to run the verified build "
-            "Nightcap downloads."},
+            "Mapleblox downloads."},
            {"Files",
             {
                 {"roblox_cache",

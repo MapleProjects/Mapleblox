@@ -112,7 +112,7 @@ Icon=mapleblox
 Terminal=false
 Categories=Game;
 MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;
-StartupWMClass=io.github.CoderDayton.nightcap
+StartupWMClass=io.github.MapleProjects.mapleblox
 EOF
 
   install -Dm644 mapleblox/packaging/mapleblox.svg \

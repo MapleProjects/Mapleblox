@@ -8,7 +8,7 @@
 namespace mocktail {
 namespace platform {
 
-inline constexpr char kMocktailApplicationName[] = "Nightcap";
+inline constexpr char kMocktailApplicationName[] = "Mapleblox";
 inline constexpr const char* kMocktailApplicationIdentifier = kApplicationId;
 
 // Configures the stable compositor identity before SDL initializes. The

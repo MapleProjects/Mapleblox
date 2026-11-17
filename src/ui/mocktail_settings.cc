@@ -838,9 +838,9 @@ void ShowError(SettingsWindow* window, const std::string& error) {
 }
 
 constexpr char kSavedText[] =
-    "Saved. Changes apply the next time Nightcap starts.";
+    "Saved. Changes apply the next time Mapleblox starts.";
 constexpr char kRestartToApplyText[] =
-    "Saved. Restart Nightcap to apply the changes.";
+    "Saved. Restart Mapleblox to apply the changes.";
 constexpr char kAppliedText[] = "Saved and applied.";
 
 struct RestartJob {
@@ -873,7 +873,7 @@ void OnRestartDone(GObject*, GAsyncResult* result, gpointer user_data) {
   }
   if (restarted && !window->saved_while_restarting) {
     window->needs_restart = false;
-    gtk_label_set_text(window->notice_label, "Saved. Nightcap restarted.");
+    gtk_label_set_text(window->notice_label, "Saved. Mapleblox restarted.");
     gtk_widget_set_visible(window->restart, FALSE);
     return;
   }
@@ -894,7 +894,7 @@ void StartRestart(SettingsWindow* window) {
   window->restarting = true;
   window->saved_while_restarting = false;
   gtk_widget_set_sensitive(window->restart, FALSE);
-  gtk_label_set_text(window->notice_label, "Restarting Nightcap…");
+  gtk_label_set_text(window->notice_label, "Restarting Mapleblox…");
   g_application_hold(g_application_get_default());
   auto* job = new RestartJob{window->instance_lock, window->restart_program,
                              std::string()};
@@ -919,8 +919,8 @@ void OnRestartResponse(AdwAlertDialog*, const char* response,
 
 void AskRestart(SettingsWindow* window) {
   AdwDialog* question = adw_alert_dialog_new(
-      "Restart Nightcap?",
-      "Nightcap is running, so the changes apply after it restarts. "
+      "Restart Mapleblox?",
+      "Mapleblox is running, so the changes apply after it restarts. "
       "Restarting leaves the game you are in.");
   adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(question), "later",
                                  "Later", "restart", "Restart Now", nullptr);
@@ -1521,7 +1521,7 @@ void OnFontPicked(GObject* source, GAsyncResult* result, gpointer user_data) {
   if (font.empty()) return;
   if (FontFamily(font).empty()) {
     ShowError(window,
-              font.filename().string() + " is not a font Nightcap can read.");
+              font.filename().string() + " is not a font Mapleblox can read.");
     return;
   }
   std::string failure;
@@ -1955,7 +1955,7 @@ void RunCacheJob(GTask* task, gpointer, gpointer task_data, GCancellable*) {
       mocktail::runtime::SingleInstanceLock::Acquire(job->lock);
   if (lock.already_running()) {
     job->error =
-        "Close Nightcap, or wait for the other clear to finish, then try "
+        "Close Mapleblox, or wait for the other clear to finish, then try "
         "again.";
   } else if (!lock.acquired()) {
     job->error = "Cannot clear the Roblox cache: " + lock.error();
@@ -2331,7 +2331,7 @@ GtkWidget* BuildSidebarTitle() {
     g_object_unref(texture);
   }
   g_bytes_unref(bytes);
-  GtkWidget* label = gtk_label_new("Nightcap");
+  GtkWidget* label = gtk_label_new("Mapleblox");
   gtk_widget_add_css_class(label, "title");
   gtk_widget_add_css_class(label, "sidebar-title");
   gtk_box_append(GTK_BOX(box), label);
@@ -2433,7 +2433,7 @@ std::string BuildVersionText() {
 
 void OnCopyVersion(GtkButton* button, gpointer user_data) {
   gdk_clipboard_set_text(gtk_widget_get_clipboard(GTK_WIDGET(button)),
-                         ("Nightcap " + BuildVersionText()).c_str());
+                         ("Mapleblox " + BuildVersionText()).c_str());
   AdwToast* toast = adw_toast_new("Copied the version");
   adw_toast_set_timeout(toast, 2);
   adw_toast_overlay_add_toast(
@@ -2477,7 +2477,7 @@ GtkWidget* BuildAboutGroup(SettingsWindow* window) {
   GtkWidget* log_row = adw_action_row_new();
   adw_preferences_row_set_title(ADW_PREFERENCES_ROW(log_row), "Log");
   adw_action_row_set_subtitle(ADW_ACTION_ROW(log_row),
-                              "The log from the last time Nightcap ran");
+                              "The log from the last time Mapleblox ran");
   GtkWidget* copy_log = gtk_button_new_with_label("Copy Log");
   gtk_widget_set_valign(copy_log, GTK_ALIGN_CENTER);
   gtk_widget_set_tooltip_text(copy_log, "Copy for a bug report");
@@ -2592,7 +2592,7 @@ GtkWidget* BuildSplitView(SettingsWindow* window,
   // The sidebar selects its first row, which needs the pages above.
   adw_navigation_split_view_set_sidebar(
       window->split,
-      adw_navigation_page_new(BuildSidebar(window), "Nightcap"));
+      adw_navigation_page_new(BuildSidebar(window), "Mapleblox"));
 
   AdwBreakpoint* narrow =
       adw_breakpoint_new(adw_breakpoint_condition_parse("max-width: 620sp"));
@@ -2694,7 +2694,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
 
   GtkWidget* window_widget = adw_application_window_new(application);
   window->widget = window_widget;
-  gtk_window_set_title(GTK_WINDOW(window_widget), "Nightcap Settings");
+  gtk_window_set_title(GTK_WINDOW(window_widget), "Mapleblox Settings");
   // Fits a 1366x768 screen with a panel.
   gtk_window_set_default_size(GTK_WINDOW(window_widget), 1040, 760);
   gtk_widget_set_size_request(window_widget, 360, 420);
@@ -2727,7 +2727,7 @@ void OnActivate(GtkApplication* application, gpointer user_data) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  g_set_application_name("Nightcap Settings");
+  g_set_application_name("Mapleblox Settings");
   const mocktail::runtime::RuntimePaths paths =
       mocktail::runtime::RuntimePaths::FromEnvironment(
           mocktail::runtime::ProcessEnvironment());

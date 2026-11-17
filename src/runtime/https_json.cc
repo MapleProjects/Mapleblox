@@ -102,7 +102,7 @@ std::optional<nlohmann::json> GetHttpsJson(const std::string& url,
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 2000L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 3500L);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mocktail/0.1");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mapleblox/0.1");
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteHttpResponse);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
   std::string proxy_url;

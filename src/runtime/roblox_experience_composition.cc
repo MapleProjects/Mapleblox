@@ -164,7 +164,7 @@ Status LaunchRobloxWebSurface(
     const std::filesystem::path executable =
         std::filesystem::read_symlink("/proc/self/exe", error);
     if (error || executable.empty()) {
-      return Unavailable("could not resolve Mocktail executable directory");
+      return Unavailable("could not resolve Mapleblox executable directory");
     }
     helper = executable.parent_path() / "mocktail_webview_helper";
   }

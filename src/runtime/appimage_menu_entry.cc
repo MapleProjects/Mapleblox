@@ -12,10 +12,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr std::string_view kOwnMarker = "X-Nightcap-AppImage=true";
+constexpr std::string_view kOwnMarker = "X-Mapleblox-AppImage=true";
 constexpr std::string_view kInstalledEntryName =
-    "io.github.CoderDayton.nightcap.desktop";
-constexpr std::string_view kNamedIcon = "io.github.CoderDayton.nightcap";
+    "io.github.MapleProjects.mapleblox.desktop";
+constexpr std::string_view kNamedIcon = "io.github.MapleProjects.mapleblox";
 
 fs::path AbsoluteOr(const Environment& environment, std::string_view name,
                     const fs::path& fallback) {
@@ -205,13 +205,13 @@ std::string AppImageDesktopEntry(const fs::path& app_image,
   const std::string exec = ExecArgument(path);
   return "[Desktop Entry]\n"
          "Type=Application\n"
-         "Name=Nightcap\n"
+         "Name=Mapleblox\n"
          "GenericName=Roblox Player\n"
          "Comment=Play Roblox on Linux\n"
          "TryExec=" + path + "\n"
          "Exec=env SDL_VIDEODRIVER=wayland,x11 " + exec + " %u\n"
          "Icon=" + std::string(icon) + "\n"
-         "StartupWMClass=io.github.CoderDayton.nightcap\n"
+         "StartupWMClass=io.github.MapleProjects.mapleblox\n"
          "Categories=Game;\n"
          "Terminal=false\n"
          "MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;\n" +

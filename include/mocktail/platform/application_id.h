@@ -4,7 +4,7 @@
 namespace mocktail {
 namespace platform {
 
-inline constexpr char kApplicationId[] = "io.github.CoderDayton.nightcap";
+inline constexpr char kApplicationId[] = "io.github.MapleProjects.mapleblox";
 
 }
 }

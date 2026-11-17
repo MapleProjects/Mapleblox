@@ -398,7 +398,7 @@ bool LoadPresets(std::string_view text, const std::vector<PresetFlag>& fflags,
     const Json json = Json::parse(text, nullptr, false);
     if (json.is_discarded() || !json.is_object() ||
         !json.value("presets", Json::array()).is_array()) {
-      *error = "The presets file is not one Nightcap wrote";
+      *error = "The presets file is not one Mapleblox wrote";
       return false;
     }
     if (json.contains("active") && json["active"].is_string()) {

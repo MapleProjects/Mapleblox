@@ -105,11 +105,11 @@ const uint8_t* glGetString(GLenum name) {
   }
   switch (name) {
     case kGlVendor:
-      return reinterpret_cast<const uint8_t*>("Mocktail");
+      return reinterpret_cast<const uint8_t*>("Mapleblox");
     case kGlRenderer:
-      return reinterpret_cast<const uint8_t*>("Mocktail GLES shim");
+      return reinterpret_cast<const uint8_t*>("Mapleblox GLES shim");
     case kGlVersion:
-      return reinterpret_cast<const uint8_t*>("OpenGL ES 3.0 Mocktail");
+      return reinterpret_cast<const uint8_t*>("OpenGL ES 3.0 Mapleblox");
     case kGlShadingLanguageVersion:
       return reinterpret_cast<const uint8_t*>("OpenGL ES GLSL ES 3.00");
     case kGlExtensions:

@@ -16,7 +16,7 @@
 #include <vector>
 
 #if !SDL_VERSION_ATLEAST(3, 4, 0)
-#error "Mocktail borrowed audio buffers require SDL 3.4 or newer"
+#error "Mapleblox borrowed audio buffers require SDL 3.4 or newer"
 #endif
 
 namespace mocktail::audio {

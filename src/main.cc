@@ -408,8 +408,8 @@ void UpdateAppImageMenu(const mocktail::runtime::Environment& environment,
           mocktail::runtime::RunningAppImage(environment),
           mocktail::runtime::AppImageIcon(environment), [&environment] {
             return mocktail::runtime::AskYesNo(
-                environment, "Add Nightcap to the app menu?",
-                "Nightcap will show in your app menu and can open Roblox "
+                environment, "Add Mapleblox to the app menu?",
+                "Mapleblox will show in your app menu and can open Roblox "
                 "links. If you delete this AppImage, the entry goes away.",
                 "No Thanks", "Add");
           });
@@ -458,7 +458,7 @@ int main(int argc, char* argv[]) {
     return EXIT_SUCCESS;
   }
   if (command_line.options.mode == mocktail::runtime::CommandMode::kVersion) {
-    std::cout << "Nightcap "
+    std::cout << "Mapleblox "
               << mocktail::runtime::FormatBuildVersion(
                      mocktail::runtime::CurrentSessionBuildInformation())
               << '\n';
@@ -569,7 +569,7 @@ int main(int argc, char* argv[]) {
           mocktail::runtime::LoadRuntimeConfig(environment,
                                                paths.config_file());
       if (saved && mocktail::runtime::WebsiteJoinNeedsFreshLaunch(saved.config)) {
-        std::cout << "  [launch] closing the running Nightcap so the Roblox "
+        std::cout << "  [launch] closing the running Mapleblox so the Roblox "
                      "cache clears before this join\n"
                   << std::flush;
         std::string stop_error;
@@ -581,7 +581,7 @@ int main(int argc, char* argv[]) {
               mocktail::runtime::SingleInstanceLock::AcquireForLaunch(
                   environment, paths));
         } else {
-          std::cerr << "  [launch] cannot close the running Nightcap, so the "
+          std::cerr << "  [launch] cannot close the running Mapleblox, so the "
                        "join goes to it: "
                     << stop_error << '\n';
         }
@@ -594,24 +594,24 @@ int main(int argc, char* argv[]) {
             mocktail::runtime::ExternalLaunchBroker::ForwardToOwner(
                 broker_options, *external_launch_request);
         if (forward_status.ok()) {
-          std::cout << "  [launch] sent website join to running Mocktail\n";
+          std::cout << "  [launch] sent website join to running Mapleblox\n";
           support_bundle_guard.SetExitCode(EXIT_SUCCESS);
           return EXIT_SUCCESS;
         }
-        std::cerr << "[FATAL] Cannot send website join to running Mocktail: "
+        std::cerr << "[FATAL] Cannot send website join to running Mapleblox: "
                   << forward_status.message() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
             environment,
-            "Nightcap is already running, but the requested experience "
+            "Mapleblox is already running, but the requested experience "
             "could not be sent to it.");
       } else if (instance_lock->already_running()) {
-        std::cerr << "[FATAL] Mocktail is already running for this user\n";
+        std::cerr << "[FATAL] Mapleblox is already running for this user\n";
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "An instance of Nightcap is already running.");
+            environment, "An instance of Mapleblox is already running.");
       } else {
         std::cerr << "[FATAL] " << instance_lock->error() << '\n';
         (void)mocktail::runtime::ShowFailureDialog(
-            environment, "Nightcap could not acquire its launch lock.");
+            environment, "Mapleblox could not acquire its launch lock.");
       }
       return EXIT_FAILURE;
     }
@@ -635,12 +635,12 @@ int main(int argc, char* argv[]) {
     if (!roblox_data_lock->acquired()) {
       std::cerr << "[FATAL] Roblox data is in use"
                 << (roblox_data_lock->already_running()
-                        ? std::string(" by another Nightcap or a cache clear")
+                        ? std::string(" by another Mapleblox or a cache clear")
                         : ": " + roblox_data_lock->error())
                 << '\n';
       (void)mocktail::runtime::ShowFailureDialog(
           environment,
-          "Nightcap could not start because another Nightcap is using its "
+          "Mapleblox could not start because another Mapleblox is using its "
           "Roblox data, or its cache is being cleared.");
       return EXIT_FAILURE;
     }
@@ -665,7 +665,7 @@ int main(int argc, char* argv[]) {
               << config_bootstrap.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Nightcap could not prepare its configuration.");
+          environment, "Mapleblox could not prepare its configuration.");
     }
     return EXIT_FAILURE;
   }
@@ -676,7 +676,7 @@ int main(int argc, char* argv[]) {
               << runtime_config.error << '\n';
     if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
       (void)mocktail::runtime::ShowFailureDialog(
-          environment, "Nightcap could not load its configuration.");
+          environment, "Mapleblox could not load its configuration.");
     }
     return EXIT_FAILURE;
   }
@@ -730,7 +730,7 @@ int main(int argc, char* argv[]) {
                  "execution.\n";
     (void)mocktail::runtime::ShowFailureDialog(
         environment,
-        "Nightcap cannot start with unsupported legacy thread "
+        "Mapleblox cannot start with unsupported legacy thread "
         "overrides enabled.");
     return EXIT_FAILURE;
   }
@@ -777,7 +777,7 @@ int main(int argc, char* argv[]) {
     std::cerr << "  [fleasion] nothing is listening on 127.0.0.1:"
               << runtime_config.config.fleasion_proxy_port()
               << "; running without Fleasion this session. Start Fleasion, or"
-                 " set its routing mode (env or hosts) to match Nightcap's\n";
+                 " set its routing mode (env or hosts) to match Mapleblox's\n";
     if (mocktail::runtime::SoberInstalled(environment, paths.home()) ==
         std::optional<bool>(false)) {
       std::cerr << "  [fleasion] Sober (org.vinegarhq.Sober) is not installed."
@@ -945,13 +945,13 @@ int main(int argc, char* argv[]) {
   if (command_line.options.mode == mocktail::runtime::CommandMode::kRun) {
     failure_dialog = mocktail::runtime::FailureDialogMonitor::Start(
         environment,
-        "Nightcap could not start Roblox because of an internal error.");
+        "Mapleblox could not start Roblox because of an internal error.");
     failure_dialog.SetLogFolder(paths.logs_root() / "sessions");
   }
   if (use_memory_limit) {
     if (!memory_limit_watchdog.Start(memory_limit_bytes, &command_line_error)) {
       failure_dialog.SetMessage(
-          "Nightcap could not start its memory safety monitor.");
+          "Mapleblox could not start its memory safety monitor.");
       std::cerr << "[FATAL] " << command_line_error << '\n';
       return EXIT_FAILURE;
     }
@@ -986,7 +986,7 @@ int main(int argc, char* argv[]) {
       return EXIT_FAILURE;
     }
     failure_dialog.SetMessage(
-        "Nightcap could not update or verify the Roblox installation.");
+        "Mapleblox could not update or verify the Roblox installation.");
     const mocktail::runtime::PayloadUpdatePreflightResult update_preflight =
         mocktail::runtime::RunPayloadUpdatePreflight(environment, paths);
     if (!update_preflight) {
@@ -994,7 +994,7 @@ int main(int argc, char* argv[]) {
       if (!update_preflight.details.empty()) {
         std::cerr << ": " << update_preflight.details;
         failure_dialog.SetMessage(
-            "Nightcap could not update or verify the Roblox installation.\n\n" +
+            "Mapleblox could not update or verify the Roblox installation.\n\n" +
             mocktail::runtime::DescribeUpdateFailure(
                 update_preflight.details));
       }
@@ -1002,7 +1002,7 @@ int main(int argc, char* argv[]) {
       return EXIT_FAILURE;
     }
     failure_dialog.SetMessage(
-        "Nightcap could not finish starting Roblox because of an internal "
+        "Mapleblox could not finish starting Roblox because of an internal "
         "error.");
     background_update.Start(environment, paths, std::chrono::minutes(30),
                             mocktail::runtime::QueryRobloxUpgradeAction);

@@ -902,7 +902,7 @@ bool PersistRobloxCookie(const std::filesystem::path& path,
                   "file. You may need to sign in again.");
   else if (secrets->enabled())
     secrets->Warn("Secure storage is unavailable. The Roblox cookie is stored "
-                  "unencrypted in Mocktail's private cookie file.");
+                  "unencrypted in Mapleblox's private cookie file.");
   return stored;
 }
 

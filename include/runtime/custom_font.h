@@ -9,7 +9,7 @@
 namespace mocktail {
 namespace runtime {
 
-inline constexpr std::string_view kCustomFontAssetStem = "NightcapCustomFont";
+inline constexpr std::string_view kCustomFontAssetStem = "MaplebloxCustomFont";
 
 std::filesystem::path InstalledCustomFont(const std::filesystem::path& dir);
 

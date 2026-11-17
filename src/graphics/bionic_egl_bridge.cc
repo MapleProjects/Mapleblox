@@ -110,7 +110,7 @@ bool BionicEglBridge::Load() {
         CanonicalPath(origin.dli_fname) != library_path_) {
       error_ = "EGL export '";
       error_ += name;
-      error_ += "' did not resolve from the exact Mocktail bridge";
+      error_ += "' did not resolve from the exact Mapleblox bridge";
       ::dlclose(loaded_handle);
       exports_.clear();
       return false;

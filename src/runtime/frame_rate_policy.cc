@@ -139,7 +139,7 @@ bool WriteRobloxFramerateCap(const std::filesystem::path &android_data_root,
     text.insert(at + properties.size(), open + value + "</int>\n");
   }
 
-  const fs::path temporary = file.string() + ".nightcap";
+  const fs::path temporary = file.string() + ".mapleblox";
   {
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     output << text;

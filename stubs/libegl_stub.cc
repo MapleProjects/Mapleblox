@@ -481,9 +481,9 @@ const char* eglQueryString(EGLDisplay display, EGLint name) {
   SetError(kEglSuccess);
   switch (name) {
     case 0x3053:
-      return "1.5 Mocktail";
+      return "1.5 Mapleblox";
     case 0x3054:
-      return "Mocktail";
+      return "Mapleblox";
     case 0x3055:
       return "EGL_KHR_create_context EGL_KHR_surfaceless_context";
     case 0x308d:

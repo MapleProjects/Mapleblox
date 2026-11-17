@@ -355,7 +355,7 @@ bool Configure(CURL* handle, const HttpTransferRequest& request,
                           request.low_speed_seconds) == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "") == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_USERAGENT,
-                          "Mocktail-native-updater/1") == CURLE_OK &&
+                          "Mapleblox-native-updater/1") == CURLE_OK &&
          curl_easy_setopt(handle, CURLOPT_ERRORBUFFER, error_buffer->data()) ==
              CURLE_OK &&
          (request.ca_bundle.empty() ||

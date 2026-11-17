@@ -105,7 +105,7 @@ bool SafeLogLine(std::string_view line) {
       "[compat]",
       "[window] first Roblox Vulkan frame presented",
       "[vulkan]",
-      "[nightcap][audio]",
+      "[mapleblox][audio]",
       "[input]",
       "[lifecycle]",
       "[main] Roblox lifecycle shutdown: Stopped",

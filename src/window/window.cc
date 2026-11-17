@@ -1014,7 +1014,7 @@ bool CreateSoftwareWaitingWindow(int width, int height, const char* title) {
     window_flags |= SDL_WINDOW_HIDDEN;
   }
 
-  g_state.sdl_window = SDL_CreateWindow(title ? title : "Mocktail — Roblox",
+  g_state.sdl_window = SDL_CreateWindow(title ? title : "Mapleblox — Roblox",
                                         width, height, window_flags);
   if (g_state.sdl_window == nullptr) {
     fprintf(stderr, "  [window] SDL fallback window failed: %s\n",
@@ -1176,7 +1176,7 @@ bool Init(int width, int height, const char* title) {
     if (!ShouldShowWindowImmediately()) {
       window_flags |= SDL_WINDOW_HIDDEN;
     }
-    g_state.sdl_window = SDL_CreateWindow(title ? title : "Mocktail — Roblox",
+    g_state.sdl_window = SDL_CreateWindow(title ? title : "Mapleblox — Roblox",
                                           width, height, window_flags);
     if (g_state.sdl_window == nullptr) {
       fprintf(stderr, "  [window] SDL Vulkan window failed: %s\n",
@@ -1332,7 +1332,7 @@ bool Init(int width, int height, const char* title) {
     window_flags |= SDL_WINDOW_HIDDEN;
   }
 
-  g_state.sdl_window = SDL_CreateWindow(title ? title : "Mocktail — Roblox",
+  g_state.sdl_window = SDL_CreateWindow(title ? title : "Mapleblox — Roblox",
                                         width, height, window_flags);
   if (!g_state.sdl_window) {
     fprintf(stderr, "  [window] SDL_CreateWindow failed: %s\n", SDL_GetError());

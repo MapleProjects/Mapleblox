@@ -467,7 +467,7 @@ GtkWidget* PresetFlagRow(Editor* editor, const Preset& preset,
   adw_expander_row_set_subtitle(
       ADW_EXPANDER_ROW(expander),
       row.flag != nullptr ? Escaped(row.flag->summary).c_str()
-                          : "Not in Nightcap's list yet.");
+                          : "Not in Mapleblox's list yet.");
   RowData* row_data = NewRowData(editor, main.name, row.flag);
 
   // Expander suffixes are shown in the reverse of the order added.
