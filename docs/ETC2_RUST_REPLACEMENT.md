@@ -78,9 +78,23 @@ Invariantes que se garantizan por construcción:
 
 ## Estado
 
-- [x] Crate creado, ABI establecida, decodificador de bloques ETC1 en modo
-      individual (el más común) con pruebas.
-- [ ] Modo diferencial, T, H, planar y EAC (R11/RG11) con pruebas diferenciales
-      contra el C++.
+- [x] Crate creado, ABI establecida.
+- [x] Decodificador completo: ETC2 RGB, RGB8A1 (punch-through), RGBA8 con alfa
+      EAC, y EAC R11/RG11 con y sin signo.
+- [x] Pruebas diferenciales contra el C++: 49 casos, 7 formatos, bloques
+      pseudoaleatorios que cubren modo individual, diferencial, T y H. Comparación
+      byte a byte, en verde.
+- [x] Decodificación en paralelo por bandas con hilos con ámbito, sin locks.
 - [ ] Packer BC7/BC4/BC5.
 - [ ] Integración en el runtime.
+
+## Rendimiento medido (1024x1024, 65536 bloques, 16 núcleos)
+
+    C++ de referencia, un hilo        5,2 ms   200 Mtexel/s    772 MiB/s
+    Rust, un hilo                     7,4 ms   142 Mtexel/s    542 MiB/s
+    Rust, 16 hilos                    1,7 ms   620 Mtexel/s   2364 MiB/s
+
+El port en un hilo es algo más lento que el C++ porque este último usa
+`pshufb` para la paleta; el paralelo lo supera por 3x y deja margen de sobra
+para alimentar el streaming de texturas sin tocar la GPU.
+
