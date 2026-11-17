@@ -1,56 +1,79 @@
-name: Check AUR packages
+name: Publish to AUR
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, without the leading v"
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: aur-packages
-  cancel-in-progress: true
+  group: aur-publish
+  cancel-in-progress: false
 
 jobs:
-  metadata:
-    name: Refresh AUR metadata
+  publish:
+    name: Bump mapleblox-git and push
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+        uses: actions/checkout@v4
 
-      - name: Prepare AUR metadata
+      - name: Resolve the version
+        id: version
         shell: bash
         run: |
           set -Eeuo pipefail
-          package_dir="$GITHUB_WORKSPACE/packaging/aur/nightcap-git"
-          version="$(git describe --tags --abbrev=0 --match='v[0-9]*')"
-          version="${version#v}"
+          raw="${{ github.event.release.tag_name || inputs.version }}"
+          version="${raw#v}"
           [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]
-          pkgver="${version}.r$(git rev-list --count HEAD).g$(git rev-parse --short=7 HEAD)"
-          sed -i "s/^pkgver=.*/pkgver=${pkgver}/" "$package_dir/PKGBUILD"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare the AUR tree
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          package_dir="$GITHUB_WORKSPACE/packaging/aur/mapleblox-git"
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.version.outputs.value }}/" \
+            "$package_dir/PKGBUILD"
           docker run --rm \
             --volume "$package_dir:/pkg" \
             archlinux:base-devel bash -Eeuo pipefail -c '
               useradd --create-home builder
-              install -d -o builder -g builder /tmp/nightcap-git
-              install -o builder -g builder -m 0644 \
-                /pkg/PKGBUILD /tmp/nightcap-git/PKGBUILD
+              install -d -o builder -g builder /tmp/pkg
+              install -o builder -g builder -m 0644 /pkg/PKGBUILD /tmp/pkg/PKGBUILD
               runuser -u builder -- bash -c \
-                "cd /tmp/nightcap-git && makepkg --printsrcinfo" \
-                > /pkg/.SRCINFO
+                "cd /tmp/pkg && makepkg --printsrcinfo" > /pkg/.SRCINFO
             '
+          grep -Fqx "pkgver=${{ steps.version.outputs.value }}" "$package_dir/PKGBUILD"
+          grep -Fqx $'\tpkgver = ${{ steps.version.outputs.value }}' "$package_dir/.SRCINFO"
 
-          grep -Fqx "pkgver=${pkgver}" "$package_dir/PKGBUILD"
-          grep -Fqx $'\tpkgver = '"${pkgver}" "$package_dir/.SRCINFO"
-
-      - name: Upload AUR metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: Nightcap-AUR
-          path: packaging/aur/nightcap-git/.SRCINFO
-          if-no-files-found: error
-          retention-days: 14
+      - name: Push to AUR
+        shell: bash
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -z "${AUR_SSH_KEY}" ]]; then
+            echo "AUR_SSH_KEY is not configured" >&2
+            exit 1
+          fi
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          ssh-keyscan aur.archlinux.org 2>/dev/null >> "$HOME/.ssh/known_hosts"
+          rm -rf aur-package
+          git clone ssh://aur@aur.archlinux.org/mapleblox-git.git aur-package
+          install -m 0644 packaging/aur/mapleblox-git/PKGBUILD aur-package/PKGBUILD
+          install -m 0644 packaging/aur/mapleblox-git/.SRCINFO aur-package/.SRCINFO
+          cd aur-package
+          git add PKGBUILD .SRCINFO
+          git -c user.name="Mapleblox CI" -c user.email="ci@mapleblox.invalid" \
+            commit -m "mapleblox-git: ${{ steps.version.outputs.value }}"
+          git push origin master
