@@ -37,7 +37,7 @@ fn main() -> ExitCode {
             events(count)
         }
         Some("help") | Some("--help") | Some("-h") | None => {
-            println!("mapleblox-tool budget | check [file] | bench [pid] [seconds]");
+            println!("mapleblox-tool budget | check [file] | bench [pid] [seconds] | events [count]");
             ExitCode::SUCCESS
         }
         Some(other) => {
