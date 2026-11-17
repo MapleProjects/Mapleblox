@@ -688,7 +688,7 @@ std::string SessionLog::Header(const Environment& environment,
   const unsigned int threads = std::thread::hardware_concurrency();
 
   std::ostringstream output;
-  output << "[nightcap] version=" << build.version
+  output << "[mapleblox] version=" << build.version
          << " commit=" << build.git_commit;
   if (build.git_dirty == "true") {
     output << " dirty=true";
@@ -705,7 +705,7 @@ std::string SessionLog::Header(const Environment& environment,
            << system.machine << '"';
   }
   output << " pid=" << getpid() << '\n'
-         << "[nightcap] cpu=\"" << CpuModel() << "\" threads=";
+         << "[mapleblox] cpu=\"" << CpuModel() << "\" threads=";
   if (threads == 0) {
     output << "unknown";
   } else {
