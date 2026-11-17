@@ -24,6 +24,20 @@
 #include <unistd.h>
 
 namespace mocktail::graphics {
+
+namespace {
+
+// These cases specify the engine the Rust decoder replaces: the asynchronous
+// dispatcher with its timeline ticket, and BC images fed by the GPU encoder.
+// The Rust decoder mode removes both by design, so it stays off here whatever
+// the environment says. Its own coverage lives in etc2_rust_decoder_test.
+const bool g_rust_decoder_off = [] {
+  unsetenv("MOCKTAIL_ETC2_RUST_DECODE");
+  return true;
+}();
+
+}  // namespace
+
 namespace {
 
 void ExpectMapping(VkFormat format, VkFormat host, EtcFormat etc) {

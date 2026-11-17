@@ -14,6 +14,8 @@
 #include <mutex>
 #include <vector>
 
+#include "mocktail/graphics/etc2_rust_decoder.h"
+
 namespace mocktail::graphics {
 namespace {
 
@@ -552,6 +554,12 @@ bool DecodeEtcImageBlockRows(EtcFormat format, const std::uint8_t* source,
   if (!ImageFits(format, source, source_bytes, width, height, destination,
                  destination_bytes)) {
     return false;
+  }
+  if (RustEtc2DecoderEnabled() &&
+      RustDecodeEtcImageBlockRows(format, source, source_bytes, width, height,
+                                  first_block_row, block_row_count, destination,
+                                  destination_bytes)) {
+    return true;
   }
   const std::uint64_t blocks_wide = (static_cast<std::uint64_t>(width) + 3) / 4;
   const std::uint64_t blocks_high =

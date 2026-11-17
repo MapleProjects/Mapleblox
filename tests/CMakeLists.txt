@@ -3,6 +3,15 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License")
 
+# Targets that compile the ETC2 decoder also compile the Rust bridge. When the
+# archive is built, they link it so the Rust path can be exercised directly.
+function(mocktail_link_rust_etc2 target)
+  if(TARGET mapleblox_etc2)
+    target_link_libraries(${target} PRIVATE mapleblox_etc2)
+    target_compile_definitions(${target} PRIVATE MAPLEBLOX_HAVE_RUST_ETC2=1)
+  endif()
+endfunction()
+
 add_executable(jnivm_test
   jnivm_test.cc
 )
@@ -769,18 +778,34 @@ mocktail_apply_compile_options(vulkan_text_overlay_compositor_test)
 add_executable(etc2_decoder_test
   etc2_decoder_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
 )
 target_include_directories(etc2_decoder_test PRIVATE
   ${PROJECT_SOURCE_DIR}/include
 )
 target_link_libraries(etc2_decoder_test PRIVATE GTest::gtest_main Threads::Threads)
 mocktail_apply_compile_options(etc2_decoder_test)
+mocktail_link_rust_etc2(etc2_decoder_test)
+
+add_executable(etc2_rust_decoder_test
+  etc2_rust_decoder_test.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
+)
+target_include_directories(etc2_rust_decoder_test PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(etc2_rust_decoder_test PRIVATE GTest::gtest_main
+  Threads::Threads)
+mocktail_apply_compile_options(etc2_rust_decoder_test)
+mocktail_link_rust_etc2(etc2_rust_decoder_test)
 
 add_executable(etc2_gpu_decoder_test
   etc2_gpu_decoder_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
 )
 target_include_directories(etc2_gpu_decoder_test PRIVATE
   ${PROJECT_SOURCE_DIR}/include
@@ -788,12 +813,14 @@ target_include_directories(etc2_gpu_decoder_test PRIVATE
 target_link_libraries(etc2_gpu_decoder_test PRIVATE GTest::gtest_main
   Threads::Threads dl)
 mocktail_apply_compile_options(etc2_gpu_decoder_test)
+mocktail_link_rust_etc2(etc2_gpu_decoder_test)
 
 add_executable(etc2_gpu_transcode_test
   etc2_gpu_transcode_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
 )
 target_include_directories(etc2_gpu_transcode_test PRIVATE
@@ -802,6 +829,7 @@ target_include_directories(etc2_gpu_transcode_test PRIVATE
 target_link_libraries(etc2_gpu_transcode_test PRIVATE GTest::gtest_main
   Threads::Threads dl)
 mocktail_apply_compile_options(etc2_gpu_transcode_test)
+mocktail_link_rust_etc2(etc2_gpu_transcode_test)
 
 pkg_check_modules(LIBPNG REQUIRED IMPORTED_TARGET libpng)
 target_link_libraries(etc2_gpu_transcode_test PRIVATE PkgConfig::LIBPNG)
@@ -861,6 +889,7 @@ add_executable(vulkan_etc2_emulation_test
   ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
@@ -871,12 +900,14 @@ target_include_directories(vulkan_etc2_emulation_test PRIVATE
 target_link_libraries(vulkan_etc2_emulation_test PRIVATE GTest::gtest_main
   Threads::Threads PkgConfig::LIBPNG)
 mocktail_apply_compile_options(vulkan_etc2_emulation_test)
+mocktail_link_rust_etc2(vulkan_etc2_emulation_test)
 
 add_executable(vulkan_etc2_gpu_emulation_test
   vulkan_etc2_gpu_emulation_test.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/chrome_trace_writer.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${PROJECT_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${PROJECT_SOURCE_DIR}/src/graphics/texture_override.cc
@@ -887,6 +918,7 @@ target_include_directories(vulkan_etc2_gpu_emulation_test PRIVATE
 target_link_libraries(vulkan_etc2_gpu_emulation_test PRIVATE
   GTest::gtest_main Threads::Threads PkgConfig::LIBPNG dl)
 mocktail_apply_compile_options(vulkan_etc2_gpu_emulation_test)
+mocktail_link_rust_etc2(vulkan_etc2_gpu_emulation_test)
 
 add_executable(video_driver_policy_test
   video_driver_policy_test.cc
@@ -1430,6 +1462,7 @@ gtest_discover_tests(host_surface_commit_gate_test)
 gtest_discover_tests(vulkan_present_progress_gate_test)
 gtest_discover_tests(vulkan_text_overlay_compositor_test)
 gtest_discover_tests(etc2_decoder_test)
+gtest_discover_tests(etc2_rust_decoder_test)
 gtest_discover_tests(etc2_gpu_decoder_test)
 gtest_discover_tests(etc2_gpu_transcode_test)
 gtest_discover_tests(texture_override_test)

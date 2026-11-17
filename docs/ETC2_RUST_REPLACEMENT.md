@@ -85,8 +85,61 @@ Invariantes que se garantizan por construcción:
       pseudoaleatorios que cubren modo individual, diferencial, T y H. Comparación
       byte a byte, en verde.
 - [x] Decodificación en paralelo por bandas con hilos con ámbito, sin locks.
+- [x] Integración en el runtime detrás de `MOCKTAIL_ETC2_RUST_DECODE`.
 - [ ] Packer BC7/BC4/BC5.
-- [ ] Integración en el runtime.
+
+## Cómo se activa
+
+    MOCKTAIL_ETC2_RUST_DECODE=1 mocktail
+
+El modo hace cuatro cosas a la vez, y las cuatro son necesarias para que no
+quede ninguna espera cruzada:
+
+1. `DecodeEtcImageBlockRows` delega en `mapleblox_etc2_decode_block_rows`, así
+   que el decodificador C++ queda solo como referencia y como respaldo si la
+   ABI no coincide.
+2. `DecodesOnCpu` devuelve verdadero para toda subida: no se graban pases de
+   decodificación en GPU, así que no hay command buffers ajenos que inyectar.
+3. `CompressesTextures` devuelve falso: sin BC7 no hay imagen comprimida en el
+   host, y por tanto ninguna subida necesita el encoder de GPU. Las texturas
+   suben como RGBA8/R16.
+4. `PrepareSubmit` no toma el camino asíncrono: decodifica en el hilo que envía
+   y devuelve un submit sin semáforo de timeline nuestro. Ningún fence del
+   cliente puede quedarse esperando un ticket que no llega.
+
+El decodificador C++ sigue siendo el que corre sin la variable, y los suites
+`vulkan_etc2_emulation_test` y `vulkan_etc2_gpu_emulation_test` fijan el modo
+viejo para seguir describiéndolo.
+
+## Medición en partida (RTX 3050 Mobile, i7-11800H, 23 minutos)
+
+Place 71278628540517, `--profile`, 162.963 frames presentados.
+
+    fps medio                 117,1
+    frame time p50            7,94 ms
+    frame time p90           11,29 ms
+    frame time p99           19,52 ms
+    frame time p99.9         26,10 ms
+    frame time max          533,50 ms   (carga de texturas)
+    frames > 100 ms              16
+    frames > 1000 ms              0
+    vkWaitForFences max      13,24 ms
+
+Congelamientos registrados por `stall_recorder`, mismo archivo antes y después:
+
+    motor viejo   215 eventos, 10 de ellos de 12,01-12,03 s, 29 entre 1 y 10 s
+    motor Rust     14 eventos, ninguno por encima de 1 s, todos en la carga
+
+El máximo de `vkWaitForFences` es la medida que importa: el fallo viejo era un
+fence esperando 12 s, y en 163 mil submits no pasa de 13 ms.
+
+Coste del decodificador: 2.074 slices, 3,49 s de CPU en 23 minutos, p50 0,80 ms.
+El peor es el lote de carga (2.841 subidas, 52 MB comprimidos a 315 MB de
+texels, 323 ms). En régimen estable el pico es 29 ms.
+
+Coste en VRAM: 880 MiB de texturas emuladas en GPU, frente a la cuarta parte
+que ocuparían comprimidas en BC. Con 2,4 GiB libres no aprieta en esta máquina,
+pero es lo que devolvería el packer BC7 en CPU.
 
 ## Rendimiento medido (1024x1024, 65536 bloques, 16 núcleos)
 

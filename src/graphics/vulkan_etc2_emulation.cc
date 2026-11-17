@@ -3,6 +3,7 @@
 #include "mocktail/graphics/bc_decoder.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
 #include "mocktail/graphics/etc2_gpu_decoder.h"
+#include "mocktail/graphics/etc2_rust_decoder.h"
 #include "mocktail/graphics/texture_override.h"
 
 #include <algorithm>
@@ -852,8 +853,13 @@ bool IsSmallMip(const ImageRecord& record, std::uint32_t mip) {
 }
 
 // New images become BC: always with Compress Textures on, and while video
-// memory is low with it off.
+// memory is low with it off. The Rust decoder mode keeps every image
+// uncompressed, because a compressed host image is only fed by the GPU encoder,
+// and that encoder is the path being replaced.
 bool CompressesTextures(const HostDevice& dev) {
+  if (RustEtc2DecoderEnabled()) {
+    return false;
+  }
   return dev.bc_textures ||
          (dev.bc_fallback && dev.bc_low_memory.load(std::memory_order_acquire));
 }
@@ -861,6 +867,9 @@ bool CompressesTextures(const HostDevice& dev) {
 // Uploads the CPU decodes rather than the GPU. A decoded image beside BC
 // ones is one, so its blocks are kept for copies into a BC image.
 bool DecodesOnCpu(const HostDevice& dev, const ImageRecord& record) {
+  if (RustEtc2DecoderEnabled()) {
+    return true;
+  }
   const bool decoded_beside_bc =
       !record.transcoded && IsColorFormat(record.format.etc_format) &&
       record.beside_bc && dev.gpu != nullptr && dev.gpu->TranscodeExpected();
@@ -5929,9 +5938,11 @@ bool VulkanEtc2Emulation::EnableGpuDecode(VkDevice device, VkQueue queue,
   if (dev == nullptr || !dev->emulated || queue == VK_NULL_HANDLE) {
     return false;
   }
-  if (GpuDecodeDisabledByEnvironment()) {
+  if (GpuDecodeDisabledByEnvironment() || RustEtc2DecoderEnabled()) {
     std::fprintf(stderr,
-                 "  [vulkan] ETC2 GPU decode off (MOCKTAIL_ETC2_GPU_DECODE=0)\n");
+                 "  [vulkan] ETC2 GPU decode off (%s)\n",
+                 RustEtc2DecoderEnabled() ? "MOCKTAIL_ETC2_RUST_DECODE"
+                                          : "MOCKTAIL_ETC2_GPU_DECODE=0");
     return false;
   }
   if (dev->copy_buffer == nullptr || dev->create_command_pool == nullptr ||
@@ -6150,7 +6161,12 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     }
   }
   const HostDevice* batch_dev = state_->Find(batch_device);
-  const bool async = allow_async && single_device && batch_dev != nullptr &&
+  // The Rust decoder mode decodes on the submitting thread and hands the
+  // application a submit with nothing of ours in it: no timeline value of ours
+  // to wait for, so no fence of the client can hang on a ticket that never
+  // arrives.
+  const bool async = !RustEtc2DecoderEnabled() && allow_async &&
+                     single_device && batch_dev != nullptr &&
                      batch_dev->timeline != VK_NULL_HANDLE &&
                      batch_dev->signal_semaphore != nullptr;
   // Copies that touch no mip this batch keeps blocks of run now, as they do

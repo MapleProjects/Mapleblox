@@ -127,6 +127,7 @@ add_library(stub_vulkan SHARED
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_etc2_emulation.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/vulkan_driver_pin.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/etc2_decoder.cc
+  ${CMAKE_SOURCE_DIR}/src/graphics/etc2_rust_decoder.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/etc2_gpu_decoder.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/bc_decoder.cc
   ${CMAKE_SOURCE_DIR}/src/graphics/texture_override.cc
@@ -145,6 +146,12 @@ target_link_libraries(stub_vulkan PRIVATE
   Threads::Threads
   dl
 )
+# The ETC2 decoder lives in this library, so the Rust port links here rather
+# than into the runtime executable.
+if(TARGET mapleblox_etc2)
+  target_link_libraries(stub_vulkan PRIVATE mapleblox_etc2)
+  target_compile_definitions(stub_vulkan PRIVATE MAPLEBLOX_HAVE_RUST_ETC2=1)
+endif()
 
 add_custom_target(all_stubs DEPENDS
   stub_sys_m stub_sys_z stub_sys_dl stub_sys_c
