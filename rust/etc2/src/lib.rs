@@ -16,7 +16,13 @@
 //! deterministic pseudo-random blocks and writes `tests/vectors.bin`; the test
 //! below decodes the same blocks here and compares every byte.
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
+
+mod bc7;
+
+pub use bc7::{
+    decode_bc4, decode_block as decode_bc7_block, encode_bc4, encode_block as encode_bc7_block,
+};
 
 pub const ERR_OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = -1;
@@ -555,6 +561,92 @@ pub fn decode_block_rows(
     Ok(())
 }
 
+/// Packs an RGBA8 image into BC7 blocks.
+///
+/// `rgba` holds `height` rows of `source_stride` bytes, of which the first
+/// `width * 4` are texels; `destination` holds `blocks_wide * blocks_high`
+/// blocks of 16 bytes, in block rows. A block that overhangs the image repeats
+/// the last texel, which is what the copy into a block-aligned image expects.
+pub fn encode_bc7_image(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    destination: &mut [u8],
+) -> Result<(), DecodeError> {
+    if width == 0 || height == 0 {
+        return Err(DecodeError::InvalidArgument);
+    }
+    let width = width as usize;
+    let height = height as usize;
+    let blocks_wide = (width + 3) / 4;
+    let blocks_high = (height + 3) / 4;
+    if source_stride < width * 4 || rgba.len() < source_stride * (height - 1) + width * 4 {
+        return Err(DecodeError::BufferTooSmall);
+    }
+    if destination.len() < blocks_wide * blocks_high * 16 {
+        return Err(DecodeError::BufferTooSmall);
+    }
+    let mut block = [0u8; 64];
+    for block_y in 0..blocks_high {
+        for block_x in 0..blocks_wide {
+            for row in 0..4 {
+                let y = (block_y * 4 + row).min(height - 1);
+                for column in 0..4 {
+                    let x = (block_x * 4 + column).min(width - 1);
+                    let source = y * source_stride + x * 4;
+                    let target = (row * 4 + column) * 4;
+                    block[target..target + 4].copy_from_slice(&rgba[source..source + 4]);
+                }
+            }
+            let packed = bc7::encode_block(&block);
+            let offset = (block_y * blocks_wide + block_x) * 16;
+            destination[offset..offset + 16].copy_from_slice(&packed);
+        }
+    }
+    Ok(())
+}
+
+/// Packs one channel of an image into BC4 blocks, `blocks_wide * blocks_high *
+/// 8` bytes. `values` holds `height` rows of `source_stride` bytes.
+pub fn encode_bc4_image(
+    values: &[u8],
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    destination: &mut [u8],
+) -> Result<(), DecodeError> {
+    if width == 0 || height == 0 {
+        return Err(DecodeError::InvalidArgument);
+    }
+    let width = width as usize;
+    let height = height as usize;
+    let blocks_wide = (width + 3) / 4;
+    let blocks_high = (height + 3) / 4;
+    if source_stride < width || values.len() < source_stride * (height - 1) + width {
+        return Err(DecodeError::BufferTooSmall);
+    }
+    if destination.len() < blocks_wide * blocks_high * 8 {
+        return Err(DecodeError::BufferTooSmall);
+    }
+    let mut block = [0u8; 16];
+    for block_y in 0..blocks_high {
+        for block_x in 0..blocks_wide {
+            for row in 0..4 {
+                let y = (block_y * 4 + row).min(height - 1);
+                for column in 0..4 {
+                    let x = (block_x * 4 + column).min(width - 1);
+                    block[row * 4 + column] = values[y * source_stride + x];
+                }
+            }
+            let packed = bc7::encode_bc4(&block);
+            let offset = (block_y * blocks_wide + block_x) * 8;
+            destination[offset..offset + 8].copy_from_slice(&packed);
+        }
+    }
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn mapleblox_etc2_abi_version() -> u32 {
     ABI_VERSION
@@ -664,10 +756,60 @@ pub unsafe extern "C" fn mapleblox_etc2_decode_block_rows(
     }
 }
 
+/// Packs an RGBA8 image into BC7 blocks. Returns 0 on success.
+///
+/// # Safety
+/// `rgba` must point to `rgba_len` readable bytes and `destination` to
+/// `destination_len` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn mapleblox_bc7_encode_image(
+    rgba: *const u8,
+    rgba_len: usize,
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    destination: *mut u8,
+    destination_len: usize,
+) -> i32 {
+    if rgba.is_null() || destination.is_null() {
+        return ERR_INVALID_ARGUMENT;
+    }
+    let rgba = unsafe { std::slice::from_raw_parts(rgba, rgba_len) };
+    let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
+    match encode_bc7_image(rgba, width, height, source_stride, destination) {
+        Ok(()) => ERR_OK,
+        Err(error) => error.code(),
+    }
+}
+
+/// Packs one channel of an image into BC4 blocks. Returns 0 on success.
+///
+/// # Safety
+/// As `mapleblox_bc7_encode_image`.
+#[no_mangle]
+pub unsafe extern "C" fn mapleblox_bc4_encode_image(
+    values: *const u8,
+    values_len: usize,
+    width: u32,
+    height: u32,
+    source_stride: usize,
+    destination: *mut u8,
+    destination_len: usize,
+) -> i32 {
+    if values.is_null() || destination.is_null() {
+        return ERR_INVALID_ARGUMENT;
+    }
+    let values = unsafe { std::slice::from_raw_parts(values, values_len) };
+    let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
+    match encode_bc4_image(values, width, height, source_stride, destination) {
+        Ok(()) => ERR_OK,
+        Err(error) => error.code(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /// One individual-mode block in the real ETC1 layout: bytes 0-2 carry the
     /// base colours as nibbles per subblock, so 0xF0 lights subblock 0 (235 after
     /// the table-0 modifier) and leaves subblock 1 dark. Every selector is zero.
