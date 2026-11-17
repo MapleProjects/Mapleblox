@@ -227,3 +227,40 @@ pump de llamadas nativas del propio Roblox, que no es nuestro. El resto de
 nuestras categorías son llamadas al driver: `submit` 67 s, `present` 76 s,
 memoria 14 s en una hora de juego. Repartir eso entre núcleos no es posible sin
 cambiar el orden en que el guest ve sus propias llamadas.
+
+## Copias entre imágenes comprimidas sin GPU
+
+Había un camino por el que una copia `vkCmdCopyImage` entre dos imágenes
+comprimidas se descartaba en silencio con `skipped a copy into a compressed
+image`. `TranscodeCopy` re-encodaba los bloques guardados en la GPU, y en el
+modo de decodificador Rust no hay GPU que transcodifique: `DecodesOnCpu`
+devuelve verdadero, `PlanGpuUpload` declina, y la copia se perdía. El mip de
+destino se quedaba con lo que tuviera, así que la textura se veía mal a
+distancia y bien al acercarse, cuando entraba su mip 0.
+
+`PackPiecesOnCpu` cubre ese hueco: copia la ventana de bloques del mip, la
+decodifica con el formato de origen y la empaqueta a BC7 en el staging que ya se
+había dimensionado en bloques. Dos detalles importan y costaron un SIGSEGV:
+
+- El formato que se decodifica es el de la imagen de origen, no el de destino.
+- Un staging de bloques se copia con `bufferRowLength` en bloques, como hace una
+  subida a una imagen empaquetada, no con el paso de texels de la región.
+
+## El packer y las texturas escaladas
+
+Con el packer encendido quedan 52 texturas escaladas 4x frente a 170 sin él, y
+en una imagen escalada el empaquetado no cubre los mips extra, así que se ven
+mal a distancia. Las dos formas de resolverlo medidas en la misma escena:
+
+| | BC7 packer | RGBA8 |
+| --- | ---: | ---: |
+| texturas en GPU | 235 MiB | 486 MiB |
+| escaladas 4x | 52 | 170 |
+| frame interval p50 | 20,3 ms | 20,4 ms |
+| frame interval p99 | 32,2 ms | 30,6 ms |
+| frame interval max | 192,4 ms | 74,5 ms |
+
+Los frames son equivalentes, así que la elección es de VRAM contra escalado:
+RGBA8 usa el doble de memoria y escala el triple de texturas. Se queda RGBA8
+(`MOCKTAIL_ETC2_BC_PACK=0`, el valor por defecto) hasta que el packer cubra los
+mips de una imagen escalada.

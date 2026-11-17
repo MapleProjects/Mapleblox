@@ -3570,6 +3570,12 @@ struct VulkanEtc2Emulation::State {
                            bool destination_found, std::uint32_t count,
                            const VkImageCopy* regions);
 
+  // Fills each piece's staging with its region re-encoded to the destination's
+  // compressed format, on the CPU. The path a compressed-to-compressed copy
+  // takes when no GPU transcode exists.
+  bool PackPiecesOnCpu(const std::vector<BlockCopy>& pieces,
+                       EtcFormat source_format,
+                       const ImageRecord& destination_record);
   void TranscodeCopy(const HostDevice& dev, VkCommandBuffer command_buffer,
                      VkImage source_image, const ImageRecord& source,
                      VkImage destination,
@@ -5664,6 +5670,72 @@ void VulkanEtc2Emulation::CmdCopyBufferToImage2(
       });
 }
 
+// Fills the staging of each piece with that region's blocks re-encoded to the
+// destination's compressed format, decoding and packing on the CPU. This is the
+// path a copy between compressed images takes when no GPU transcode exists,
+// which is every copy in the Rust decoder mode: the blocks are kept on the CPU
+// there, and dropping the copy leaves the mip holding whatever it had.
+bool VulkanEtc2Emulation::State::PackPiecesOnCpu(
+    const std::vector<BlockCopy>& pieces, EtcFormat source_format,
+    const ImageRecord& destination_record) {
+  for (const BlockCopy& piece : pieces) {
+    if (piece.target == nullptr || piece.wide == 0 || piece.high == 0) {
+      LogFailure("skipped a copy whose pieces have no staging");
+      return false;
+    }
+    std::shared_ptr<const std::vector<std::uint8_t>> blocks;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      const auto record = images.find(piece.image);
+      if (record == images.end() || piece.mip >= record->second.blocks.size()) {
+        LogFailure("skipped a copy from a mip with no record");
+        return false;
+      }
+      blocks = record->second.blocks[piece.mip];
+    }
+    if (blocks == nullptr) {
+      LogFailure("skipped a copy from a mip with no kept blocks");
+      return false;
+    }
+    const std::size_t block_bytes = piece.block_bytes;
+    const std::uint32_t texels_wide = piece.wide * 4;
+    const std::uint32_t texels_high = piece.high * 4;
+    // The region is a window of a wider mip, so its blocks are copied out
+    // first: the decoder reads a whole image of the width it is given, and the
+    // rows of the kept mip are `mip_blocks_wide` blocks apart.
+    std::vector<std::uint8_t> region(std::size_t{piece.wide} * piece.high *
+                                     block_bytes);
+    for (std::uint32_t row = 0; row < piece.high; ++row) {
+      const std::size_t source =
+          (std::size_t{piece.y + row} * piece.mip_blocks_wide + piece.x) *
+          block_bytes;
+      if (source + std::size_t{piece.wide} * block_bytes > blocks->size()) {
+        LogFailure("skipped a copy larger than the kept blocks");
+        return false;
+      }
+      std::memcpy(region.data() + std::size_t{row} * piece.wide * block_bytes,
+                  blocks->data() + source,
+                  std::size_t{piece.wide} * block_bytes);
+    }
+    std::vector<std::uint8_t> texels(
+        std::size_t{texels_wide} * texels_high * 4);
+    if (!DecodeEtcImage(source_format, region.data(), region.size(),
+                        texels_wide, texels_high, texels.data(),
+                        texels.size())) {
+      LogFailure("could not decode the blocks of a copy");
+      return false;
+    }
+    if (!RustPackBc7BlockRows(texels.data(), texels_wide, texels_high,
+                              std::size_t{texels_wide} * 4, 0, piece.high,
+                              piece.target,
+                              std::size_t{piece.wide} * piece.high * 16)) {
+      LogFailure("could not pack the blocks of a copy");
+      return false;
+    }
+  }
+  return true;
+}
+
 // Re-encodes the compressed blocks kept for a scaled source into a BC
 // destination, through the same GPU transcode as an upload.
 void VulkanEtc2Emulation::State::TranscodeCopy(
@@ -5738,8 +5810,36 @@ void VulkanEtc2Emulation::State::TranscodeCopy(
                      staging.block->buffer, destination,
                      static_cast<std::uint32_t>(uploads.size()),
                      uploads.data(), &copies, false)) {
-    ReleaseStaging({staging});
-    LogFailure("skipped a copy into a compressed image");
+    // No GPU transcode, so the pieces are decoded and packed on the CPU into
+    // the staging that was sized in blocks for exactly that.
+    if (!PackPiecesOnCpu(pieces, source.format.etc_format,
+                         destination_record)) {
+      ReleaseStaging({staging});
+      LogFailure("skipped a copy into a compressed image");
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    CommandRecord& command = commands[command_buffer];
+    command.staging.push_back(staging);
+    command.AddBlockCopies(pieces);
+    has_commands.store(true, std::memory_order_release);
+    // The staging holds BC blocks, so the copy reads them at a block-aligned
+    // row pitch and the extent is in blocks, exactly as an upload into a
+    // packed image does.
+    for (std::size_t index = 0; index < uploads.size(); ++index) {
+      // The staging offset is already folded into the recorded bufferOffset.
+      VkBufferImageCopy copy = uploads[index];
+      copy.bufferRowLength = static_cast<std::uint32_t>(pieces[index].wide) * 4;
+      copy.bufferImageHeight = pieces[index].high * 4;
+      copy.imageExtent.width = pieces[index].wide;
+      copy.imageExtent.height = pieces[index].high;
+      copy.imageExtent.depth = 1;
+      copy.imageSubresource.mipLevel += destination_record.mip_offset;
+      copy.imageSubresource.baseArrayLayer = 0;
+      copy.imageSubresource.layerCount = 1;
+      dev.copy_buffer_to_image(command_buffer, staging.block->buffer,
+                               destination, destination_layout, 1, &copy);
+    }
     return;
   }
   {
@@ -6175,6 +6275,9 @@ bool VulkanEtc2Emulation::State::RedirectRecords(
                           ? "sharp, BC"
                           : "skipped");
     } else {
+      // Naming the shapes tells which of the three paths ran out: no source
+      // record, a scaled source, or a destination that is both compressed and
+      // scaled with an unscaled source.
       LogFailure("skipped a copy into a compressed image");
     }
     return true;
