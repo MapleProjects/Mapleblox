@@ -1176,6 +1176,129 @@ FpsWaitTrace& QueueIdleWaitTrace() {
   return trace;
 }
 
+// ---------------------------------------------------------------------------
+// Hang guard.
+//
+// When the GPU stops making progress the host driver blocks a fence wait until
+// its own device-lost timeout expires; on NVIDIA 620.70 that is about 12 s.
+// The engine passes UINT64_MAX, so the render thread sleeps for the whole
+// timeout before it learns anything and its recovery (about 800 ms) can start.
+//
+// Waiting in slices lets the adapter see the stall while it happens. Once the
+// budget is spent it reports the same VK_ERROR_DEVICE_LOST the driver would
+// eventually return, and every later wait returns it at once instead of
+// stacking another driver timeout on top of the first one.
+constexpr std::uint64_t kHangSliceNs = 250ULL * 1000ULL * 1000ULL;
+constexpr std::uint64_t kInfiniteTimeout = ~static_cast<std::uint64_t>(0);
+constexpr std::size_t kSlowCallCapacity = 24;
+constexpr std::uint64_t kSlowCallFloorNs = 20ULL * 1000ULL * 1000ULL;
+
+std::atomic<bool> g_device_lost_injected{false};
+
+std::uint64_t HangBudgetNs() {
+  static const std::uint64_t budget_ns = []() -> std::uint64_t {
+    const char* value = std::getenv("MOCKTAIL_VK_HANG_BUDGET_MS");
+    const long long ms =
+        value != nullptr && value[0] != '\0' ? std::strtoll(value, nullptr, 10)
+                                             : 2500;
+    if (ms <= 0) {
+      return std::uint64_t{0};
+    }
+    return static_cast<std::uint64_t>(ms) * std::uint64_t{1000} *
+           std::uint64_t{1000};
+  }();
+  return budget_ns;
+}
+
+bool DeviceLostInjected() {
+  return g_device_lost_injected.load(std::memory_order_acquire);
+}
+
+struct SlowCall {
+  const char* name = nullptr;
+  std::uint64_t start_ns = 0;
+  double elapsed_ms = 0.0;
+};
+
+struct SlowCallLog {
+  std::mutex mutex;
+  SlowCall entries[kSlowCallCapacity];
+  std::size_t next = 0;
+  std::size_t count = 0;
+};
+
+SlowCallLog& SlowCalls() {
+  static SlowCallLog log;
+  return log;
+}
+
+// Keeps the last slow blocking calls so a hang can be attributed after the
+// fact without a full profile trace.
+void NoteSlowCall(const char* name, std::uint64_t start_ns) {
+  if (name == nullptr || start_ns == 0) {
+    return;
+  }
+  const std::uint64_t elapsed_ns = MonotonicNanos() - start_ns;
+  if (elapsed_ns < kSlowCallFloorNs) {
+    return;
+  }
+  SlowCallLog& log = SlowCalls();
+  std::lock_guard<std::mutex> lock(log.mutex);
+  SlowCall& entry = log.entries[log.next % kSlowCallCapacity];
+  entry.name = name;
+  entry.start_ns = start_ns;
+  entry.elapsed_ms = static_cast<double>(elapsed_ns) / 1e6;
+  ++log.next;
+  if (log.count < kSlowCallCapacity) {
+    ++log.count;
+  }
+}
+
+void DumpSlowCalls() {
+  SlowCallLog& log = SlowCalls();
+  std::lock_guard<std::mutex> lock(log.mutex);
+  if (log.count == 0) {
+    return;
+  }
+  std::fprintf(stderr, "  [hang] slow blocking calls, newest first:\n");
+  const std::size_t newest = log.next;
+  for (std::size_t step = 0; step < log.count; ++step) {
+    const std::size_t index = (newest + kSlowCallCapacity - 1 - step) % kSlowCallCapacity;
+    const SlowCall& entry = log.entries[index];
+    if (entry.name == nullptr) {
+      continue;
+    }
+    std::fprintf(stderr, "  [hang]   %-24s %9.1f ms\n", entry.name,
+                 entry.elapsed_ms);
+  }
+}
+
+// True when the wait that started at `start_ns` has burned the hang budget.
+bool ExceededHangBudget(const char* name, std::uint64_t start_ns,
+                        std::uint64_t* elapsed_ms) {
+  const std::uint64_t budget_ns = HangBudgetNs();
+  if (budget_ns == 0) {
+    return false;
+  }
+  const std::uint64_t elapsed_ns = MonotonicNanos() - start_ns;
+  if (elapsed_ns < budget_ns) {
+    return false;
+  }
+  if (elapsed_ms != nullptr) {
+    *elapsed_ms = elapsed_ns / 1000000ULL;
+  }
+  if (!g_device_lost_injected.exchange(true, std::memory_order_acq_rel)) {
+    std::fprintf(stderr,
+                 "  [hang] %s blocked %llu ms (budget %llu ms): reporting "
+                 "VK_ERROR_DEVICE_LOST so the engine recovers now\n",
+                 name != nullptr ? name : "unknown",
+                 static_cast<unsigned long long>(elapsed_ns / 1000000ULL),
+                 static_cast<unsigned long long>(budget_ns / 1000000ULL));
+    DumpSlowCalls();
+  }
+  return true;
+}
+
 VkResult VKAPI_CALL
 ObservedHostQueuePresent(VkQueue queue, const VkPresentInfoKHR* present_info) {
   AdapterState& state = State();
@@ -2359,12 +2482,38 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForFences(
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  if (DeviceLostInjected()) {
+    // The device already stopped making progress; waiting again would only add
+    // another driver timeout on top of the one the engine was just told about.
+    observation.SetResult(VK_ERROR_DEVICE_LOST);
+    return VK_ERROR_DEVICE_LOST;
+  }
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkWaitForFences", "wait");
   const bool fps_trace = FpsTraceEnabled();
-  const std::uint64_t fence_start_ns = fps_trace ? MonotonicNanos() : 0;
-  const VkResult result =
-      host_wait(device, fence_count, fences, wait_all, timeout);
+  const std::uint64_t fence_start_ns = MonotonicNanos();
+  VkResult result = VK_TIMEOUT;
+  std::uint64_t remaining = timeout;
+  for (;;) {
+    const std::uint64_t slice =
+        timeout == kInfiniteTimeout ? kHangSliceNs
+                                    : std::min(remaining, kHangSliceNs);
+    result = host_wait(device, fence_count, fences, wait_all, slice);
+    if (result != VK_TIMEOUT) {
+      break;
+    }
+    if (ExceededHangBudget("vkWaitForFences", fence_start_ns, nullptr)) {
+      result = VK_ERROR_DEVICE_LOST;
+      break;
+    }
+    if (timeout != kInfiniteTimeout) {
+      remaining = remaining > slice ? remaining - slice : 0;
+      if (remaining == 0) {
+        break;  // the application's own timeout expired: keep VK_TIMEOUT
+      }
+    }
+  }
+  NoteSlowCall("vkWaitForFences", fence_start_ns);
   if (fps_trace) {
     FenceWaitTrace().Record(fence_start_ns);
   }
@@ -2640,12 +2789,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueWaitIdle(VkQueue queue) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  if (DeviceLostInjected()) {
+    observation.SetResult(VK_ERROR_DEVICE_LOST);
+    return VK_ERROR_DEVICE_LOST;
+  }
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkQueueWaitIdle", "wait");
   const bool fps_trace = FpsTraceEnabled();
-  const std::uint64_t idle_start_ns = fps_trace ? MonotonicNanos() : 0;
+  const std::uint64_t idle_start_ns = MonotonicNanos();
   const VkResult result =
       State().text_overlay.QueueWaitIdle(queue, host_wait);
+  NoteSlowCall("vkQueueWaitIdle", idle_start_ns);
   if (fps_trace) {
     QueueIdleWaitTrace().Record(idle_start_ns);
   }
@@ -2661,10 +2815,18 @@ VKAPI_ATTR VkResult VKAPI_CALL vkDeviceWaitIdle(VkDevice device) {
     observation.SetResult(VK_ERROR_INITIALIZATION_FAILED);
     return VK_ERROR_INITIALIZATION_FAILED;
   }
+  if (DeviceLostInjected()) {
+    // Recovery starts with an idle wait; returning at once keeps the engine from
+    // paying a second driver timeout before it can rebuild the device.
+    observation.SetResult(VK_ERROR_DEVICE_LOST);
+    return VK_ERROR_DEVICE_LOST;
+  }
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkDeviceWaitIdle", "wait");
+  const std::uint64_t idle_start_ns = MonotonicNanos();
   const VkResult result =
       State().text_overlay.DeviceWaitIdle(device, host_wait);
+  NoteSlowCall("vkDeviceWaitIdle", idle_start_ns);
   observation.SetResult(result);
   return result;
 }
