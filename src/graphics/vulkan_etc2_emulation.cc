@@ -654,6 +654,10 @@ constexpr VkDeviceSize kStagingAlignment = 256;
 constexpr VkDeviceSize kIdleStagingBlocks = 4;
 // Decode batches kept for their buffers once they complete.
 constexpr std::size_t kMaxSpareBatches = 8;
+// Decoded bytes a direct decode batch collects before it is handed to the
+// dispatcher. Small enough that the decode starts while the application is
+// still recording, large enough that the thread pool's fan-out is amortised.
+constexpr VkDeviceSize kDirectBatchBytes = 8u * 1024u * 1024u;
 // Device-local staging for one GPU upload is capped at this many blocks,
 // 128 MiB at the default block size.
 constexpr VkDeviceSize kMaxGpuStagingBlocks = 8;
@@ -2929,6 +2933,15 @@ struct VulkanEtc2Emulation::State {
     for (Region& region : rewritten) {
       region.bufferOffset += staging.offset;
     }
+    // The Rust decoder mode starts the decode here, while the application is
+    // still recording, instead of at submit. The submit then only waits for it
+    // on this thread, so the batch never lands inside vkQueueSubmit.
+    if (RustEtc2DecoderEnabled() &&
+        EnqueueDirectDecode(command_buffer, uploads, staging)) {
+      RecordHostWriteBarrier(dev, command_buffer);
+      record_copy(staging.block->buffer, std::move(rewritten));
+      return;
+    }
     Record(command_buffer, std::move(uploads), staging);
     RecordHostWriteBarrier(dev, command_buffer);
     record_copy(staging.block->buffer, std::move(rewritten));
@@ -3342,6 +3355,173 @@ struct VulkanEtc2Emulation::State {
     record.AddUploads(uploads);
     record.staging.push_back(staging);
     has_commands.store(true, std::memory_order_release);
+  }
+
+  // The application's bytes for one upload, or false when the host cannot read
+  // them right now, in which case the upload waits for the submit as before.
+  bool ResolveSource(const PendingUpload& upload, const std::uint8_t** data,
+                     VkDeviceMemory* memory) {
+    std::lock_guard<std::mutex> lock(mutex);
+    const auto binding = buffers.find(upload.source);
+    if (binding == buffers.end()) {
+      return false;
+    }
+    const VkDeviceSize absolute = binding->second.offset + upload.source_offset;
+    const auto mapping = mappings.find(binding->second.memory);
+    if (mapping == mappings.end() || absolute < mapping->second.offset) {
+      return false;
+    }
+    const VkDeviceSize within = absolute - mapping->second.offset;
+    if (mapping->second.size != VK_WHOLE_SIZE &&
+        (within > mapping->second.size ||
+         upload.source_span > mapping->second.size - within)) {
+      return false;
+    }
+    *data = static_cast<const std::uint8_t*>(mapping->second.data) + within;
+    *memory = binding->second.memory;
+    return true;
+  }
+
+  // Uploads recorded for a command buffer that the dispatcher has not been
+  // given yet. A load of a single place records thousands of tiny copies, and
+  // one batch per copy makes the thread pool's fan-out cost more than the
+  // decode, so they are collected until the batch is worth splitting.
+  struct DirectPending {
+    std::vector<PendingUpload> uploads;
+    std::vector<const std::uint8_t*> sources;
+    std::vector<VkDeviceMemory> memories;
+    VkDeviceSize compressed = 0;
+    VkDeviceSize decoded = 0;
+  };
+  std::unordered_map<VkCommandBuffer, DirectPending> direct_pending;
+
+  // Hands the collected uploads of one command buffer to the dispatcher as a
+  // single batch. Requires `mutex`.
+  void FlushDirectDecodes(VkCommandBuffer command_buffer,
+                          CommandRecord& record) {
+    const auto found = direct_pending.find(command_buffer);
+    if (found == direct_pending.end() || found->second.uploads.empty()) {
+      return;
+    }
+    DirectPending pending = std::move(found->second);
+    direct_pending.erase(found);
+    std::vector<VkImage> touched;
+    touched.reserve(pending.uploads.size());
+    for (const PendingUpload& upload : pending.uploads) {
+      touched.push_back(upload.image);
+    }
+    std::sort(touched.begin(), touched.end());
+    touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+
+    std::unique_ptr<DecodeBatch> batch = AcquireBatch();
+    batch->device = pending.uploads.front().device;
+    batch->source_bytes = pending.compressed;
+    batch->decoded_bytes = pending.decoded;
+    batch->deferred_sources = std::move(pending.sources);
+    batch->uploads = std::move(pending.uploads);
+
+    const std::uint64_t ticket = Enqueue(std::move(batch));
+    RememberTickets(touched, ticket);
+    // The dispatcher reads these mappings, so unmapping or freeing them has to
+    // wait for the batch, exactly as it does for a deferred gather at submit.
+    for (const VkDeviceMemory memory : pending.memories) {
+      deferred_reads[memory] = ticket;
+    }
+    record.last_ticket = std::max(record.last_ticket, ticket);
+  }
+
+  // Collects the decode of one recorded copy. The batch reads the
+  // application's mapping, which Vulkan keeps stable until the copy completes,
+  // and writes the staging range the copy will read.
+  bool EnqueueDirectDecode(VkCommandBuffer command_buffer,
+                           const std::vector<PendingUpload>& uploads,
+                           const Staging& staging) {
+    if (uploads.empty()) {
+      return false;
+    }
+    std::vector<const std::uint8_t*> sources;
+    std::vector<VkDeviceMemory> memories;
+    sources.reserve(uploads.size());
+    memories.reserve(uploads.size());
+    for (const PendingUpload& upload : uploads) {
+      const std::uint8_t* data = nullptr;
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      if (!ResolveSource(upload, &data, &memory)) {
+        return false;
+      }
+      sources.push_back(data);
+      memories.push_back(memory);
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    CommandRecord& record = commands[command_buffer];
+    record.staging.push_back(staging);
+    DirectPending& pending = direct_pending[command_buffer];
+    pending.uploads.insert(pending.uploads.end(), uploads.begin(),
+                           uploads.end());
+    pending.sources.insert(pending.sources.end(), sources.begin(),
+                          sources.end());
+    pending.memories.insert(pending.memories.end(), memories.begin(),
+                            memories.end());
+    for (const PendingUpload& upload : uploads) {
+      pending.compressed += upload.compressed;
+      pending.decoded += upload.decoded;
+    }
+    if (pending.decoded >= kDirectBatchBytes) {
+      FlushDirectDecodes(command_buffer, record);
+    }
+    has_commands.store(true, std::memory_order_release);
+    return true;
+  }
+
+  // Waits for the decodes started when the copies in these command buffers were
+  // recorded, then fills the kept blocks the copies read. Called from the
+  // submitting thread, before the guest's submit, so a slow decode costs a
+  // slower frame and never a fence that never signals.
+  void WaitForDirectDecodes(const VkCommandBuffer* command_buffers,
+                            std::uint32_t count) {
+    std::vector<BlockCopy> block_copies;
+    std::uint64_t ticket = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      std::uint64_t submit_order = 0;
+      const auto collect = [&](VkCommandBuffer command_buffer,
+                               std::uint64_t base) {
+        const auto record = commands.find(command_buffer);
+        if (record == commands.end()) {
+          return;
+        }
+        ticket = std::max(ticket, record->second.last_ticket);
+        for (const BlockCopy& copy : record->second.block_copies) {
+          block_copies.push_back(copy);
+          block_copies.back().order += base;
+        }
+      };
+      for (std::uint32_t index = 0; index < count; ++index) {
+        const auto record = commands.find(command_buffers[index]);
+        if (record == commands.end()) {
+          continue;
+        }
+        FlushDirectDecodes(command_buffers[index], record->second);
+        const std::uint64_t base = submit_order;
+        submit_order += record->second.next_order;
+        collect(command_buffers[index], base);
+        const CommandRecord& primary = record->second;
+        for (std::size_t inner = 0; inner < primary.secondaries.size();
+             ++inner) {
+          const auto secondary = commands.find(primary.secondaries[inner]);
+          if (secondary != commands.end()) {
+            FlushDirectDecodes(primary.secondaries[inner], secondary->second);
+          }
+          collect(primary.secondaries[inner],
+                  base + primary.secondary_orders[inner]);
+        }
+      }
+    }
+    WaitForTicket(ticket);
+    if (!block_copies.empty()) {
+      WaitForTicket(TicketTouching(block_copies));
+      FillBlockCopies(block_copies);
+    }
   }
 
   // Asynchronous decode. One dispatcher runs batches in the order tickets
@@ -4096,7 +4276,12 @@ void VulkanEtc2Emulation::DestroyDevice(VkDevice device) {
           [device](const Staging& staging) {
             return staging.block->device == device;
           });
-      it = owned ? state_->commands.erase(it) : std::next(it);
+      if (owned) {
+        state_->direct_pending.erase(it->first);
+        it = state_->commands.erase(it);
+      } else {
+        ++it;
+      }
     }
     auto& blocks = state_->staging_blocks;
     for (auto it = blocks.begin(); it != blocks.end();) {
@@ -6060,6 +6245,14 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
       !state_->has_commands.load(std::memory_order_acquire)) {
     return result;
   }
+  if (RustEtc2DecoderEnabled()) {
+    // Every decode was queued when its copy was recorded. Waiting for it here,
+    // on the submitting thread, is what keeps the guest's submit free of
+    // anything of ours: no command buffer to inject, no timeline value to wait
+    // for, so no fence of the client can hang on a ticket that never arrives.
+    state_->WaitForDirectDecodes(command_buffers, count);
+    return result;
+  }
   result.decode_commands =
       state_->GpuDecodeCommands(command_buffers, count, queue);
   struct Work {
@@ -6161,12 +6354,7 @@ Etc2SubmitWait VulkanEtc2Emulation::PrepareSubmit(
     }
   }
   const HostDevice* batch_dev = state_->Find(batch_device);
-  // The Rust decoder mode decodes on the submitting thread and hands the
-  // application a submit with nothing of ours in it: no timeline value of ours
-  // to wait for, so no fence of the client can hang on a ticket that never
-  // arrives.
-  const bool async = !RustEtc2DecoderEnabled() && allow_async &&
-                     single_device && batch_dev != nullptr &&
+  const bool async = allow_async && single_device && batch_dev != nullptr &&
                      batch_dev->timeline != VK_NULL_HANDLE &&
                      batch_dev->signal_semaphore != nullptr;
   // Copies that touch no mip this batch keeps blocks of run now, as they do
@@ -6404,6 +6592,7 @@ void VulkanEtc2Emulation::ReleaseCommandBuffer(VkCommandBuffer command_buffer) {
     }
     doomed = std::move(record->second.staging);
     decode_commands = std::move(record->second.decode_commands);
+    state_->direct_pending.erase(command_buffer);
     state_->commands.erase(record);
     state_->has_commands.store(!state_->commands.empty(),
                                std::memory_order_release);
