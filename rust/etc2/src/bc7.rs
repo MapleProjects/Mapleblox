@@ -239,6 +239,34 @@ pub fn encode_block(rgba: &[u8]) -> [u8; 16] {
             high_box[channel] = high_box[channel].max(texel[channel]);
         }
     }
+    // A block whose texels all round to the same value has nothing to search
+    // for: the bounding box is a point, so one endpoint pair reproduces it as
+    // closely as mode 6 can and the two refinement passes would fit the same
+    // line back. Large areas of UI, walls and sky are made of these.
+    let mut flat = true;
+    for channel in 0..4 {
+        if low_box[channel] & 0xFE != high_box[channel] & 0xFE {
+            flat = false;
+            break;
+        }
+    }
+    if flat {
+        let value = quantize_endpoint(
+            [
+                low_box[0] as f32,
+                low_box[1] as f32,
+                low_box[2] as f32,
+                low_box[3] as f32,
+            ],
+            best_parity([
+                low_box[0] as f32,
+                low_box[1] as f32,
+                low_box[2] as f32,
+                low_box[3] as f32,
+            ]),
+        );
+        return write_block(value, value, &[0u32; 16]);
+    }
     let mut mean = [0.0f32; 4];
     for texel in texels.iter() {
         for channel in 0..4 {
@@ -351,17 +379,22 @@ pub fn encode_block(rgba: &[u8]) -> [u8; 16] {
         }
     }
 
+    write_block(best_low, best_high, &best_indices)
+}
+
+/// Serializes one mode 6 block from its endpoints and indices.
+fn write_block(low: [u8; 4], high: [u8; 4], indices: &[u32; 16]) -> [u8; 16] {
     let mut block = [0u8; 16];
     let mut writer = BitWriter::new(&mut block);
     writer.write(0x40, 7); // mode 6: six clear bits then the marker
     for channel in 0..4 {
-        writer.write((best_low[channel] >> 1) as u32, 7);
-        writer.write((best_high[channel] >> 1) as u32, 7);
+        writer.write((low[channel] >> 1) as u32, 7);
+        writer.write((high[channel] >> 1) as u32, 7);
     }
-    writer.write((best_low[0] & 1) as u32, 1);
-    writer.write((best_high[0] & 1) as u32, 1);
-    writer.write(best_indices[0] & 0x7, 3);
-    for index in best_indices.iter().skip(1) {
+    writer.write((low[0] & 1) as u32, 1);
+    writer.write((high[0] & 1) as u32, 1);
+    writer.write(indices[0] & 0x7, 3);
+    for index in indices.iter().skip(1) {
         writer.write(*index, 4);
     }
     block

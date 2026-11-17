@@ -2600,6 +2600,7 @@ struct VulkanEtc2Emulation::State {
   // cores idle behind one image. The block rows of every packed upload in the
   // batch are queued together instead.
   void PackBatch(const std::vector<EmitJob>& jobs) {
+    TraceScope trace_scope(ActiveProfileTrace(), "etc2 pack", "texture");
     PackQueue queue;
     for (const EmitJob& job : jobs) {
       const PendingUpload& upload = *job.upload;
@@ -2619,6 +2620,7 @@ struct VulkanEtc2Emulation::State {
     if (queue.bands.empty()) {
       return;
     }
+    trace_scope.Arg("bands", static_cast<std::int64_t>(queue.bands.size()));
     const std::size_t threads = std::min<std::size_t>(
         std::max(PackWorkerCount(), 1U), queue.bands.size());
     RunOnDecodeWorkers([](void* context) { static_cast<PackQueue*>(context)->Run(); },
