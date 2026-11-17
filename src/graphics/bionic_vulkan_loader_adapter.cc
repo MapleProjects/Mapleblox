@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "runtime/stall_recorder.h"
 
 #include "mocktail/graphics/android_vulkan_wsi_adapter.h"
 #include "mocktail/graphics/chrome_trace_writer.h"
@@ -1243,8 +1246,18 @@ VkResult VKAPI_CALL ProfiledCreateGraphicsPipelines(
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkCreateGraphicsPipelines",
                                        "pipeline");
+  const auto started = std::chrono::steady_clock::now();
   const VkResult result =
       host(device, cache, count, infos, allocator, pipelines);
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+  if (elapsed_ms >= 50.0) {
+    char detail[96] = {};
+    std::snprintf(detail, sizeof(detail), "count=%u cache=%d result=%d", count,
+                  cache != VK_NULL_HANDLE ? 1 : 0, static_cast<int>(result));
+    mocktail::runtime::RecordGraphicsEvent("pipeline", detail, elapsed_ms);
+  }
   scope.Arg("count", count);
   scope.Arg("cache", cache != VK_NULL_HANDLE);
   scope.Arg("result", result);
@@ -1281,7 +1294,20 @@ VkResult VKAPI_CALL ProfiledCreateShaderModule(
   }
   mocktail::graphics::TraceScope scope(mocktail::graphics::ActiveProfileTrace(),
                                        "vkCreateShaderModule", "pipeline");
+  const auto started = std::chrono::steady_clock::now();
   const VkResult result = host(device, create_info, allocator, shader_module);
+  const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - started)
+                                .count();
+  if (elapsed_ms >= 20.0) {
+    char detail[96] = {};
+    std::snprintf(detail, sizeof(detail), "bytes=%zu result=%d",
+                  create_info != nullptr
+                      ? static_cast<std::size_t>(create_info->codeSize)
+                      : 0U,
+                  static_cast<int>(result));
+    mocktail::runtime::RecordGraphicsEvent("shader", detail, elapsed_ms);
+  }
   scope.Arg("bytes", create_info != nullptr
                          ? static_cast<std::int64_t>(create_info->codeSize)
                          : 0);
@@ -1334,11 +1360,11 @@ VkResult VKAPI_CALL ProfiledAllocateMemory(
   return result;
 }
 
-// Null unless profiling is on and `name` is a profiled device command.
-// These take precedence over the ETC2 wrappers, so a command both wrap is
-// timed inside its adapter function instead.
+// Mapleblox: shader and pipeline creation are always wrapped. They are rare
+// compared to draw calls, they are the usual cause of a multi-second freeze
+// during a graphics reload, and the wrapper only adds two clock reads.
 PFN_vkVoidFunction ProfileAdapterProc(const char* name) {
-  if (name == nullptr || mocktail::graphics::ActiveProfileTrace() == nullptr) {
+  if (name == nullptr) {
     return nullptr;
   }
   if (std::strcmp(name, "vkCreateGraphicsPipelines") == 0) {
@@ -1351,6 +1377,9 @@ PFN_vkVoidFunction ProfileAdapterProc(const char* name) {
   }
   if (std::strcmp(name, "vkCreateShaderModule") == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(ProfiledCreateShaderModule);
+  }
+  if (mocktail::graphics::ActiveProfileTrace() == nullptr) {
+    return nullptr;
   }
   if (std::strcmp(name, "vkCreatePipelineCache") == 0) {
     return reinterpret_cast<PFN_vkVoidFunction>(ProfiledCreatePipelineCache);

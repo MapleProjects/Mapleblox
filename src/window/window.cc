@@ -26,6 +26,7 @@
 #include "mocktail/platform/sdl_event_converter.h"
 #include "mocktail/platform/sdl_window_icon.h"
 #include "runtime/memory_limit.h"
+#include "runtime/stall_recorder.h"
 #include "window/host_surface_commit_gate.h"
 #include "window/input_pump_pacer.h"
 #include "window/main_thread_command_gate.h"
@@ -1927,6 +1928,7 @@ bool SwapBuffers() {
     }
   }
   RecordFirstPresentTime(swap_count);
+  mocktail::runtime::RecordFramePresented(now_ticks_ns, swap_count);
   present_scope.NotifyObserver(static_cast<uint64_t>(swap_count));
   ShowIfHidden();
   if (swap_count == 1) {
@@ -1981,6 +1983,7 @@ void NoteVulkanPresent() {
     }
   }
   RecordFirstPresentTime(present_count);
+  mocktail::runtime::RecordFramePresented(now_ticks_ns, present_count);
   present_scope.NotifyObserver(static_cast<uint64_t>(present_count));
   ShowIfHidden();
   if (present_count == 1) {

@@ -29,6 +29,13 @@ fn main() -> ExitCode {
                 .unwrap_or(10);
             bench(pid, seconds)
         }
+        Some("events") => {
+            let count = args
+                .get(1)
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(20);
+            events(count)
+        }
         Some("help") | Some("--help") | Some("-h") | None => {
             println!("mapleblox-tool budget | check [file] | bench [pid] [seconds]");
             ExitCode::SUCCESS
@@ -68,6 +75,70 @@ fn budget() -> ExitCode {
     println!("published FInt {:>8} MiB ({} bytes)", published / MIB, published);
     if published == i32::MAX as u64 {
         println!("note: the FFlag is a signed 32-bit integer, so 2 GiB is the ceiling");
+    }
+    ExitCode::SUCCESS
+}
+
+fn default_stall_path() -> PathBuf {
+    if let Ok(state) = env::var("XDG_STATE_HOME") {
+        if !state.is_empty() {
+            return Path::new(&state).join("mocktail/diagnostics/stalls.jsonl");
+        }
+    }
+    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
+    Path::new(&home).join(".local/state/mocktail/diagnostics/stalls.jsonl")
+}
+
+fn events(count: usize) -> ExitCode {
+    let path = default_stall_path();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("mapleblox-tool: no stall records at {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut total_ms = 0.0_f64;
+    let mut worst_ms = 0.0_f64;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            let gap = value.get("gap_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            total_ms += gap;
+            worst_ms = worst_ms.max(gap);
+            rows.push(value);
+        }
+    }
+    println!(
+        "{} eventos, {:.1} s acumulados, peor {:.0} ms",
+        rows.len(),
+        total_ms / 1000.0,
+        worst_ms
+    );
+    println!("{:<19} {:>9} {:>8} {:>7} {:>6} {:>6}", "cuando", "gap ms", "frame", "MHz", "temp", "RSS MB");
+    for value in rows.iter().rev().take(count).rev() {
+        let text = |key: &str| {
+            value
+                .get(key)
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_default()
+        };
+        println!(
+            "{:<19} {:>9} {:>8} {:>7} {:>6} {:>6}",
+            text("t"),
+            text("gap_ms"),
+            text("frame"),
+            text("freq_mhz"),
+            text("temp_c"),
+            text("rss_mb")
+        );
     }
     ExitCode::SUCCESS
 }
