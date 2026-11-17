@@ -357,6 +357,34 @@ set_target_properties(mapleblox_policy PROPERTIES
 add_dependencies(mapleblox_policy mapleblox_policy_build)
 target_link_libraries(mocktail_runtime PUBLIC mapleblox_policy)
 
+# Optional Rust ETC2 decoder. See docs/ETC2_RUST_REPLACEMENT.md: it replaces the
+# GPU-side emulation that injected command buffers into the guest's submits and
+# rewrote its barriers, which is what left the render fence unsignalled.
+option(MAPLEBLOX_RUST_ETC2 "Build and link the Rust ETC2 decoder" OFF)
+if(MAPLEBLOX_RUST_ETC2)
+  set(MAPLEBLOX_ETC2_MANIFEST "${CMAKE_SOURCE_DIR}/rust/etc2/Cargo.toml")
+  set(MAPLEBLOX_ETC2_ARCHIVE "${CMAKE_BINARY_DIR}/rust/libmapleblox_etc2.a")
+  add_custom_command(
+    OUTPUT "${MAPLEBLOX_ETC2_ARCHIVE}"
+    COMMAND "${MAPLEBLOX_CARGO_EXECUTABLE}" build --release
+            --manifest-path "${MAPLEBLOX_ETC2_MANIFEST}"
+            --target-dir "${CMAKE_BINARY_DIR}/rust-etc2"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_BINARY_DIR}/rust-etc2/release/libmapleblox_etc2.a"
+            "${MAPLEBLOX_ETC2_ARCHIVE}"
+    DEPENDS "${MAPLEBLOX_ETC2_MANIFEST}"
+            "${CMAKE_SOURCE_DIR}/rust/etc2/src/lib.rs"
+    COMMENT "Building the Mapleblox Rust ETC2 decoder"
+    VERBATIM)
+  add_custom_target(mapleblox_etc2_build DEPENDS "${MAPLEBLOX_ETC2_ARCHIVE}")
+  add_library(mapleblox_etc2 STATIC IMPORTED GLOBAL)
+  set_target_properties(mapleblox_etc2 PROPERTIES
+    IMPORTED_LOCATION "${MAPLEBLOX_ETC2_ARCHIVE}")
+  add_dependencies(mapleblox_etc2 mapleblox_etc2_build)
+  target_link_libraries(mocktail_runtime PUBLIC mapleblox_etc2)
+  target_compile_definitions(mocktail_runtime PRIVATE MAPLEBLOX_HAVE_RUST_ETC2=1)
+endif()
+
 # The diagnostics binary ships with the package: budget, FFlag validation and
 # a live benchmark of the running client.
 add_custom_command(

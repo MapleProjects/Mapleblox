@@ -1,0 +1,19 @@
+[package]
+name = "mapleblox-etc2"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Mapleblox ETC2/EAC texture decoding, exposed to the C++ runtime over a C ABI"
+license = "Apache-2.0"
+
+[lib]
+name = "mapleblox_etc2"
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
