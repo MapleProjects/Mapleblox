@@ -16,7 +16,7 @@
 //! deterministic pseudo-random blocks and writes `tests/vectors.bin`; the test
 //! below decodes the same blocks here and compares every byte.
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 pub const ERR_OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = -1;
@@ -528,6 +528,33 @@ fn decode_band(
     }
 }
 
+/// Decodes block rows `[first_block_row, first_block_row + block_row_count)`
+/// of the image `decode_image` describes. `destination` is the whole image, as
+/// in the C++ reference: bands write the texel rows their blocks cover and
+/// never touch another band's bytes, so they can run on separate threads.
+pub fn decode_block_rows(
+    format: EtcFormat,
+    source: &[u8],
+    width: u32,
+    height: u32,
+    first_block_row: u32,
+    block_row_count: u32,
+    destination: &mut [u8],
+) -> Result<(), DecodeError> {
+    let layout = Layout::new(format, source, width, height, destination)?;
+    let first = first_block_row as usize;
+    let count = block_row_count as usize;
+    if first + count > layout.blocks_high {
+        return Err(DecodeError::InvalidArgument);
+    }
+    if count == 0 {
+        return Ok(());
+    }
+    let start = first * 4 * layout.stride;
+    decode_band(&layout, source, first, count, &mut destination[start..]);
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn mapleblox_etc2_abi_version() -> u32 {
     ABI_VERSION
@@ -557,6 +584,81 @@ pub unsafe extern "C" fn mapleblox_etc2_decode_image(
     let source = unsafe { std::slice::from_raw_parts(source, source_len) };
     let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
     match decode_image(format, source, width, height, destination) {
+        Ok(()) => ERR_OK,
+        Err(error) => error.code(),
+    }
+}
+
+/// As `mapleblox_etc2_decode_image`, across `threads` scoped threads.
+///
+/// # Safety
+/// As `mapleblox_etc2_decode_image`.
+#[no_mangle]
+pub unsafe extern "C" fn mapleblox_etc2_decode_image_parallel(
+    format: u32,
+    source: *const u8,
+    source_len: usize,
+    width: u32,
+    height: u32,
+    destination: *mut u8,
+    destination_len: usize,
+    threads: u32,
+) -> i32 {
+    let Some(format) = EtcFormat::from_raw(format) else {
+        return ERR_INVALID_ARGUMENT;
+    };
+    if source.is_null() || destination.is_null() {
+        return ERR_INVALID_ARGUMENT;
+    }
+    let source = unsafe { std::slice::from_raw_parts(source, source_len) };
+    let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
+    match decode_image_parallel(
+        format,
+        source,
+        width,
+        height,
+        destination,
+        threads as usize,
+    ) {
+        Ok(()) => ERR_OK,
+        Err(error) => error.code(),
+    }
+}
+
+/// As `mapleblox_etc2_decode_image`, for one band of block rows. `destination`
+/// is the whole image, as in the C++ reference.
+///
+/// # Safety
+/// As `mapleblox_etc2_decode_image`.
+#[no_mangle]
+pub unsafe extern "C" fn mapleblox_etc2_decode_block_rows(
+    format: u32,
+    source: *const u8,
+    source_len: usize,
+    width: u32,
+    height: u32,
+    first_block_row: u32,
+    block_row_count: u32,
+    destination: *mut u8,
+    destination_len: usize,
+) -> i32 {
+    let Some(format) = EtcFormat::from_raw(format) else {
+        return ERR_INVALID_ARGUMENT;
+    };
+    if source.is_null() || destination.is_null() {
+        return ERR_INVALID_ARGUMENT;
+    }
+    let source = unsafe { std::slice::from_raw_parts(source, source_len) };
+    let destination = unsafe { std::slice::from_raw_parts_mut(destination, destination_len) };
+    match decode_block_rows(
+        format,
+        source,
+        width,
+        height,
+        first_block_row,
+        block_row_count,
+        destination,
+    ) {
         Ok(()) => ERR_OK,
         Err(error) => error.code(),
     }
@@ -697,5 +799,65 @@ mod tests {
         }
         assert!(cases > 0, "no cases in vectors.bin");
         eprintln!("compared {cases} cases against the C++ reference");
+    }
+
+    /// Bands of block rows must reproduce the whole image byte for byte, which
+    /// is what lets the runtime split one upload across worker threads.
+    #[test]
+    fn blocks_row_bands_match_the_whole_image() {
+        const FORMATS: [EtcFormat; 7] = [
+            EtcFormat::Rgb8,
+            EtcFormat::Rgb8A1,
+            EtcFormat::Rgba8,
+            EtcFormat::EacR11,
+            EtcFormat::EacR11Signed,
+            EtcFormat::EacRg11,
+            EtcFormat::EacRg11Signed,
+        ];
+        let mut state = 0x9E37_79B9u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        for format in FORMATS {
+            for (width, height) in [(37u32, 23u32), (4, 4), (1, 9), (64, 5)] {
+                let blocks = width.div_ceil(4) * height.div_ceil(4);
+                let source: Vec<u8> = (0..blocks * format.block_bytes() as u32)
+                    .map(|_| next() as u8)
+                    .collect();
+                let texels = (width * height) as usize * format.texel_bytes();
+                let mut whole = vec![0u8; texels];
+                decode_image(format, &source, width, height, &mut whole)
+                    .expect("whole image decodes");
+
+                let mut banded = vec![0u8; texels];
+                let blocks_high = height.div_ceil(4);
+                let mut first = 0;
+                while first < blocks_high {
+                    let count = 2.min(blocks_high - first);
+                    let status = unsafe {
+                        mapleblox_etc2_decode_block_rows(
+                            format as u32,
+                            source.as_ptr(),
+                            source.len(),
+                            width,
+                            height,
+                            first,
+                            count,
+                            banded.as_mut_ptr(),
+                            banded.len(),
+                        )
+                    };
+                    assert_eq!(status, ERR_OK, "{format:?} {width}x{height} band {first}");
+                    first += count;
+                }
+                assert_eq!(
+                    banded, whole,
+                    "{format:?} {width}x{height} decoded in bands"
+                );
+            }
+        }
     }
 }
