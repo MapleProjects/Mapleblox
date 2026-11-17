@@ -86,11 +86,12 @@ Invariantes que se garantizan por construcción:
       byte a byte, en verde.
 - [x] Decodificación en paralelo por bandas con hilos con ámbito, sin locks.
 - [x] Integración en el runtime detrás de `MOCKTAIL_ETC2_RUST_DECODE`.
-- [ ] Packer BC7/BC4/BC5.
+- [x] Packer BC7/BC4/BC5, detrás de `MOCKTAIL_ETC2_BC_PACK`.
 
 ## Cómo se activa
 
     MOCKTAIL_ETC2_RUST_DECODE=1 mocktail
+    MOCKTAIL_ETC2_RUST_DECODE=1 MOCKTAIL_ETC2_BC_PACK=1 mocktail
 
 El modo hace cuatro cosas a la vez, y las cuatro son necesarias para que no
 quede ninguna espera cruzada:
@@ -100,12 +101,14 @@ quede ninguna espera cruzada:
    ABI no coincide.
 2. `DecodesOnCpu` devuelve verdadero para toda subida: no se graban pases de
    decodificación en GPU, así que no hay command buffers ajenos que inyectar.
-3. `CompressesTextures` devuelve falso: sin BC7 no hay imagen comprimida en el
-   host, y por tanto ninguna subida necesita el encoder de GPU. Las texturas
-   suben como RGBA8/R16.
-4. `PrepareSubmit` no toma el camino asíncrono: decodifica en el hilo que envía
-   y devuelve un submit sin semáforo de timeline nuestro. Ningún fence del
-   cliente puede quedarse esperando un ticket que no llega.
+3. `CompressesTextures` devuelve lo que diga `RustBc7PackerEnabled()`. Sin
+   `MOCKTAIL_ETC2_BC_PACK` las texturas suben como RGBA8/R16 y no hay imagen
+   comprimida en el host. Con él, el mismo pool empaqueta a BC7 después de
+   decodificar y la imagen del host vuelve a ser BC, pero alimentada por CPU: el
+   encoder de GPU y su self-test no vuelven.
+4. El decodificado se encola al grabar la copia, no al enviar. El submit espera
+   ese trabajo en su propio hilo, con un fence nuestro que nadie del cliente ve,
+   así que el lote de carga ya no cae dentro de `vkQueueSubmit`.
 
 El decodificador C++ sigue siendo el que corre sin la variable, y los suites
 `vulkan_etc2_emulation_test` y `vulkan_etc2_gpu_emulation_test` fijan el modo
@@ -138,8 +141,26 @@ El peor es el lote de carga (2.841 subidas, 52 MB comprimidos a 315 MB de
 texels, 323 ms). En régimen estable el pico es 29 ms.
 
 Coste en VRAM: 880 MiB de texturas emuladas en GPU, frente a la cuarta parte
-que ocuparían comprimidas en BC. Con 2,4 GiB libres no aprieta en esta máquina,
-pero es lo que devolvería el packer BC7 en CPU.
+que ocuparían comprimidas en BC. Eso es lo que devuelve el packer.
+
+## Medición con el packer y el decodificado fuera del submit
+
+Misma máquina, escena más pesada (`place 10707252093`), resumida con
+`scripts/summarize_profile_trace.py`. La tabla completa de las cuatro fases está
+en [GRAPHICS_PERFORMANCE_PLAN.md](GRAPHICS_PERFORMANCE_PLAN.md).
+
+| métrica | sin packer | con packer |
+| --- | ---: | ---: |
+| `emulated texture (MB)` peak | 568,81 | **158,47** |
+| `compressed texture (MB)` peak | 89,99 | 87,68 |
+| `etc2 decode` max | 24,19 ms | 91,97 ms |
+| `vkQueueSubmit` max | 118,03 ms | 1.016,44 ms |
+
+El packer baja la VRAM un 72% y sube el coste del decodificado, porque
+empaquetar BC7 cuesta del orden de diez veces más que decodificar ETC2. El
+`vkQueueSubmit` de un segundo es el lote de carga esperando a que se empaquete,
+una sola vez al entrar; en régimen el submit máximo es de 19,48 ms y el
+`stall_recorder` no registra un solo evento.
 
 ## Rendimiento medido (1024x1024, 65536 bloques, 16 núcleos)
 
